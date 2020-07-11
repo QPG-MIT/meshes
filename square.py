@@ -1,5 +1,5 @@
 # meshes/square.py
-# Ryan Hamerly, 7/9/20
+# Ryan Hamerly, 7/11/20
 #
 # Implements SquareNetwork (subclass of MeshNetwork) with code to handle the SquareNet decomposition.
 #
@@ -48,17 +48,17 @@ def calibrateDiag(Acol, Tpost, p_splitter: Any=0., X: Crossing=MZICrossing(), er
     return (p_phase, err) if errout else (p_phase)
 
 # Calibrates the phases needed to realize SquareNet.
-def squaredec(A, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
+def squaredec(mat, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
     r"""
     Performs the SquareNet decomposition.
-    :param A: Input-output matrix.  Can be rectangular or complex-valued.  SquareNet can only realize matrices with
+    :param mat: Input-output matrix.  Can be rectangular or complex-valued.  SquareNet can only realize matrices with
     |A| ≤ 1.
     :param p_splitter: Splitter errors or other manufacturing imperfections.
     :param X: Crossing class.
     :param warn: Issues warnings if the matrix could not be perfectly realized.
     :return: p_phase, an array with size=(M, N, X.n_phase)
     """
-    (N, M) = A.shape; Tv = np.eye(N, N+1, dtype=np.complex)
+    (N, M) = mat.shape; Tv = np.eye(N, N+1, dtype=np.complex)
     p_splitter = p_splitter * np.ones([M, N, X.n_splitter])
     p_phase = np.zeros([M, N, X.n_phase], dtype=np.float)
     theta = np.zeros([M, N], dtype=np.float); phi = np.zeros([M, N], dtype=np.float)
@@ -66,13 +66,12 @@ def squaredec(A, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
     # to get the output transfer matrix (same method as in T_square).
     err = 0
     for i in range(M):
-        (p_phase[i], err_i) = calibrateDiag(A[:, i], Tv[:, :N], p_splitter[i], X, True)
+        (p_phase[i], err_i) = calibrateDiag(mat[:, i], Tv[:, :N], p_splitter[i], X, True)
         err += err_i
         X.rmult_falling(Tv, p_phase[i], p_splitter[i])
         Tv[:, :N] = Tv[:, 1:]
         Tv[:, N] = 0
     if (warn and err):
-        print (err)
         warnings.warn(
             "SquareNet calibration: {:d}/{:d} matrix values could not be set.".format(err, M*N))
     return p_phase
@@ -130,19 +129,19 @@ class SquareNetwork(MeshNetwork):
         """
         return self.X.n_splitter
 
-    def __init__(self, p_phase=0.0, p_splitter=0.0, X=MZICrossing(), A=None):
+    def __init__(self, p_phase=0.0, p_splitter=0.0, X=MZICrossing(), M=None):
         r"""
         Mesh network based on SquareNet decomposition.  SquareNet can represent an arbitrary rectangular matrix up to a
         scaling factor.  For an N*M matrix, the inputs are:
         :param p_phase: Crossing degrees of freedom.  Scalar or size-(M, N, X.n_phase) tensor.
         :param p_splitter: Crossing imperfections.  Scalar or size-(M, N, X.n_splitter) tensor.
-        :param A: The matrix to be represented.  Real or complex, size-(N, M).  If specified, runs squaredec() to find
+        :param M: The matrix to be represented.  Real or complex, size-(N, M).  If specified, runs squaredec() to find
         the SquareNet decomposition, and any information in p_phase is overwritten.
         """
         self._X = X; self.p_phase = np.array(p_phase); self.p_splitter = np.array(p_splitter)
-        (self._M, self._N) = A.shape if not (A is None) else self.p_phase.shape[:-1]
-        if not (A is None):
-            self.p_phase = squaredec(A, self.p_splitter, self.X)  # <-- Where all the hard work is done
+        (self._M, self._N) = M.shape if not (M is None) else self.p_phase.shape[:-1]
+        if not (M is None):
+            self.p_phase = squaredec(M, self.p_splitter, self.X)  # <-- Where all the hard work is done
         assert self.p_phase.shape in [(), (self.M, self.N, self.n_phase)]
         assert self.p_splitter.shape in [(), (self.M, self.N, self.n_splitter)]
 
@@ -169,7 +168,7 @@ class SquareNetworkMZI(SquareNetwork):
     def phi(self):
         return self.p_phase[:, :, 1] if self.p_phase.ndim else self.p_phase
 
-    def __init__(self, p_phase=0.0, p_splitter=0.0, A=None):
+    def __init__(self, p_phase=0.0, p_splitter=0.0, M=None):
         r"""
         SquareNet based on lossless MZI crossings.
         :param p_phase: Phase parameters (phi_k, theta_k).  Scalar or size-(m, n, 2) tensor.
@@ -177,4 +176,4 @@ class SquareNetworkMZI(SquareNetwork):
         :param A: The matrix to be represented.  If specified, runs squaredec() to find the SquareNet decomposition,
         and any information in p_phase is overwritten.
         """
-        super(SquareNetworkMZI, self).__init__(p_phase, p_splitter, X=MZICrossing(), A=A)
+        super(SquareNetworkMZI, self).__init__(p_phase, p_splitter, X=MZICrossing(), M=M)

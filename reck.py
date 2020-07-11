@@ -6,56 +6,54 @@
 # History
 #   06/18/20: Defined class ReckNetwork (part of module meshes.py)
 #   07/09/20: Moved to this file.
+#   07/10/20: Added compatibility with custom crossings in crossing.py
 
 import numpy as np
+import warnings
+from typing import Any
 from .mesh import StructuredMeshNetwork
+from .crossing import Crossing, MZICrossing
 
 class ReckNetwork(StructuredMeshNetwork):
-    def __init__(self, N: int=0, p_phase=0, p_splitter=0, M=None):
+    def __init__(self,
+                 p_crossing: Any=0.,
+                 phi_out: Any=0.,
+                 p_splitter: Any=0.,
+                 X: Crossing=MZICrossing(),
+                 M: np.ndarray=None):
         r"""
         Mesh network based on the Reck (triangular) decomposition.
         :param N: Number of inputs / outputs.
         :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
-        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
+        :param p_splitter: Beamsplitter imperfection parameters.  Scalar or size (N(N-1)/2, X.n_splitter).
         :param M: A unitary matrix.  If specified, runs clemdec() to find the mesh realizing this unitary.
         """
-        if (M is not None): N = len(M)
-        assert (N > 0 and N%2 == 0)
+        N = len(phi_out if (M is None) else M)   # Start by getting N, shifts, lens, p_splitter
         shifts = list(range(N-2, 0, -1)) + list(range(0, N-1, 1))
         lens = ((N-np.array(shifts))//2).tolist()
-        super(ReckNetwork, self).__init__(N, lens, shifts, p_phase, p_splitter)
-        if not (M is None):
-            self._p0_splitter = self._p0_splitter * np.concatenate([[1]*l + [-1]*l for (i, l) in enumerate(lens)])
-            (pars_S, ch_S, phi_out) = reckdec(M); self.p_phase = np.zeros(N**2, dtype=np.float)
-            (m0, m, n) = (-2, 0, -1)
-            for (i, (ch, (theta, phi))) in enumerate(zip(ch_S, pars_S)):
-                if (ch == N-2): m0 += 2; m = m0-1
-                m += 1; n = (ch - shifts[m])//2
-                self.p_phase[self.inds[2*m] + n] = phi
-                self.p_phase[self.inds[2*m+1] + n] = 2*theta
-            self.p_phase[-N:] = phi_out
-            self.flip_splitter_symmetry()
+        p_splitter = np.array(p_splitter); assert p_splitter.shape in [(), (N*(N-1)//2, X.n_splitter)]
+        if (M is None):
+            # Initialize from parameters.  Check parameters first.
+            assert p_crossing.shape == (N*(N-1)//2, X.n_phase) and phi_out.shape == (N,)
+        else:
+            # Initialize from a matrix.  Calls reckdec() after correctly ordering the crossings.
+            if p_splitter.ndim: p_splitter = reorder_reck(N, p_splitter, True)
+            (pars_S, ch_S, phi_out) = reckdec(M, p_splitter, X)  # <-- The hard work is all done in here.
+            p_crossing = reorder_reck(N, pars_S)
+            if p_splitter.ndim: p_splitter = reorder_reck(N, p_splitter)
+        super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
+                                          p_crossing=p_crossing, phi_out=phi_out, X=X)
 
 
-# Miscellaneous functions and the Reck decomposition.
 
-# Transfer matrix for the 2x2 MZI:
-# -->--[phi]--| (pi/4   |--[2*theta]--| -(pi/4   |-->--
-# -->---------|  +beta) |-------------|   +beta) |-->--
-def _T(theta, phi, beta=0.):
-    #return np.exp(1j*theta) * np.array([[np.exp(1j*phi)*np.cos(theta), -np.sin(theta)],
-    #                                    [np.exp(1j*phi)*np.sin(theta),  np.cos(theta)]])
-    cosTh = np.cos(theta); sinTh = np.sin(theta); cos2B = np.cos(beta); sin2B = np.sin(beta); eiPh = np.exp(1j*phi)
-    return np.exp(1j*theta) * np.array([[eiPh*(cosTh - 1j*sin2B*sinTh), -cos2B*sinTh],
-                                        [eiPh*(cos2B*sinTh),            cosTh + 1j*sin2B*sinTh]])
-def _Tdag(theta, phi, beta=0.):
-    return _T(theta, phi, beta).conj().transpose()
-
-def reckdec(U):
+def reckdec(U: np.ndarray, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
     r"""
     Computes the Reck decomposition of a unitary matrix.  This code is called when instantiating a Reck network from
     a matrix.
     :param U: The unitary matrix.
+    :param p_splitter: Splitter imperfections.  A size-(N*(N-1)/2, X.n_splitter) matrix.
+    :param X: Crossing class.
+    :param warn: Issues warnings if the matrix could not be perfectly realized.
     :return: A tuple (pars_S, ch_S, pars_Smat, phi_out)
         pars_S: A size-((N-1)*N/2, 2) array.  Each row contains a pair (theta, phi) for each 2x2 block
         ch_S: A size-((N-1)*N/2) vector.  Location of each block.
@@ -65,22 +63,50 @@ def reckdec(U):
     U = np.array(U)
     n = len(U)
     num_Tdag = n*(n-1)//2
-    pars_Tdag = np.zeros([num_Tdag, 2], dtype=float)
+    p_splitter = np.ones([num_Tdag, X.n_splitter]) * p_splitter
+    pars_Tdag = np.zeros([num_Tdag, X.n_phase], dtype=float)
     ch_Tdag = np.zeros([num_Tdag], dtype=int)
     ind_Tdag = 0
+    err = 0
     for i in range(n - 1):
         for j in range(n-2, i-1, -1):
             # U -> U T_{i-j,i-j+1}^dag
             u = U[i, j]
             v = U[i, j+1]
-            theta = np.arctan(np.abs(v/u))
-            phi = -np.angle(-v/u)
-            pars_Tdag[ind_Tdag] = [theta, phi]
+            beta_i = p_splitter[ind_Tdag]
+            (pars_i, err_i) = X.Tsolve((np.conj(v), -np.conj(u)), 'T2:', beta_i)
+            pars_Tdag[ind_Tdag] = pars_i
             ch_Tdag[ind_Tdag] = j
             ind_Tdag += 1
-            U[:, j:j+2] = U[:, j:j+2].dot(_Tdag(theta, phi))
+            err += err_i
+            U[:, j:j+2] = U[:, j:j+2].dot(X.Tdag(pars_i, beta_i))
     diag_phi = np.mod(np.array(np.angle(np.diag(U))), 2*np.pi)
     # We can express U = D T1 T2 T3 ..., where T1, ... come from pars_Tdag
     pars_S = pars_Tdag
     ch_S = ch_Tdag
+    if (warn and err):
+        warnings.warn(
+            "Reck calibration: {:d}/{:d} beam splitters could not be set correctly.".format(err, n*(n-1)//2))
     return (pars_S, ch_S, diag_phi)
+
+def reorder_reck(N: int, data: np.ndarray, reverse=False) -> np.ndarray:
+    r"""
+    Used to reorder blocks because reckdec()'s output arranges them along rising diagonals, top to bottom.
+    Meanwhile, StructuredMeshNetwork orders them in columns for uniformity and computational efficiency.
+    :param N: Size of Reck network (number of channels).
+    :param data: Array of size (N(N-1)/2, p)
+    :param reverse: If False, start with data ordered along diagonals, reorder them in columns.
+    If True, start with data ordered along columns, reorder them in diagonals.
+    :return: Array of size (N(N-1)/2, p)
+    """
+    if data.ndim == 0: return data
+    assert len(data) == N*(N-1)//2
+    inds = np.cumsum(np.pad((N-(np.abs(np.array(range(-N+2, N-1)))))//2, (1, 0)))
+    out = data*0; ind_in = 0
+    for i in range(N-1):
+        for j in range(N-1-i):
+            ind_out = inds[j+2*i]+min(i, N-2-i-j)
+            if reverse: out[ind_in ] = data[ind_out]
+            else:       out[ind_out] = data[ind_in ]
+            ind_in += 1
+    return out
