@@ -1,11 +1,12 @@
 # meshes/square.py
-# Ryan Hamerly, 7/11/20
+# Ryan Hamerly, 12/10/20
 #
 # Implements SquareNetwork (subclass of MeshNetwork) with code to handle the SquareNet decomposition.
 #
 # History
 #   11/16/19: Conceived SquareNet, wrote decomposition code (Note3/main.py)
 #   07/09/20: Moved to this file.  Created classes SquareNetwork, SquareNetworkMZI.
+#   12/10/20: Added reciprocal RELLIM tuning method for SquareNet and the associated Reck.
 
 import numpy as np
 import warnings
@@ -129,7 +130,7 @@ class SquareNetwork(MeshNetwork):
         """
         return self.X.n_splitter
 
-    def __init__(self, p_phase=0.0, p_splitter=0.0, X=MZICrossing(), M=None):
+    def __init__(self, p_phase=0.0, p_splitter=0.0, X=MZICrossing(), M=None, method='direct'):
         r"""
         Mesh network based on SquareNet decomposition.  SquareNet can represent an arbitrary rectangular matrix up to a
         scaling factor.  For an N*M matrix, the inputs are:
@@ -137,11 +138,17 @@ class SquareNetwork(MeshNetwork):
         :param p_splitter: Crossing imperfections.  Scalar or size-(M, N, X.n_splitter) tensor.
         :param M: The matrix to be represented.  Real or complex, size-(N, M).  If specified, runs squaredec() to find
         the SquareNet decomposition, and any information in p_phase is overwritten.
+        :param method: Method used to find p_phase from M.  Options: 'direct', 'rellim'.
         """
         self._X = X; self.p_phase = np.array(p_phase); self.p_splitter = np.array(p_splitter)
         (self._M, self._N) = M.shape if not (M is None) else self.p_phase.shape[:-1]
         if not (M is None):
-            self.p_phase = squaredec(M, self.p_splitter, self.X)  # <-- Where all the hard work is done
+            if method == 'direct':
+                self.p_phase = squaredec(M, self.p_splitter, self.X)  # <-- Where all the hard work is done
+            elif method == 'rellim':
+                self.p_phase = squaredec_rellim(M, self.p_splitter, self.X)  # <-- More hard work
+            else:
+                raise ValueError(method)
         assert self.p_phase.shape in [(), (self.M, self.N, self.n_phase)]
         assert self.p_splitter.shape in [(), (self.M, self.N, self.n_splitter)]
 
@@ -177,3 +184,102 @@ class SquareNetworkMZI(SquareNetwork):
         and any information in p_phase is overwritten.
         """
         super(SquareNetworkMZI, self).__init__(p_phase, p_splitter, X=MZICrossing(), M=M)
+
+
+def calibrateRellim(m, n, Npost, U, p_splitter, X, jrange, warn):
+    r"""
+    A general Reciprocal RELLIM routine to calibrate an m*n SquareNet or associated subgraph.
+    :param m: Number of falling diagonals.
+    :param n: Number of rising diagonals.
+    :param Npost: Total number of waveguides.
+    :param U: Target matrix.
+    :param p_splitter: Beamsplitter imperfections.
+    :param X: Crossing element.  Only MZICrossing supported at present.
+    :param jrange: Range of the j-loop.  Function of i.
+    :param warn: Warns the presence of errors.
+    :return: p_phase
+    """
+    p_phase = np.zeros([m, n, X.n_phase], dtype=np.float)
+    Upost = np.eye(Npost, dtype=np.complex)
+    if not isinstance(X, MZICrossing):
+        raise NotImplementedError("Only standard MZI crossings supported for now.")
+    Xf = X.flip()
+
+    # (i, j): diagonal index, MZI index within diagonal (Fig. 1a)
+    err = 0
+    for i in range(m):
+        for j in jrange(i):
+            ind = (n-1)+i-j  # position of MZI relative to top of triangle
+            # For each (i, j), find the current MZI's splitting ratio [theta] and last MZI's phase [phi_last]
+            if (j == n):
+                b = Upost[:, ind+1]
+                p_phase[i, 0, 1] = phi = np.angle(b.conj().dot(U[:, i]))
+                Upost[:, ind+1] *= np.exp(1j*phi)
+            else:
+                bc = Upost[:, ind:ind+2]  # Vectors [b, c]
+                (T11, T21) =  bc.conj().T.dot(U[:, i])   # Targets: (T11, T21) ~ (b* u_i, c* u_i)
+                ((theta, phi), d_err) = Xf.Tsolve((T11, T21), 'T:1', p_splitter[i, n-1-j]); err += d_err
+                p_phase[i, n-1-j, 0] = theta
+                if j: p_phase[i, n-j, 1] = phi
+                T = Xf.T((theta, phi), p_splitter[i, n-1-j])
+                Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)
+    if (warn and err):
+        warnings.warn(
+            "SquareNet calibration: {:d}/{:d} matrix values could not be set.".format(err, m*n))
+    return p_phase
+
+def squaredec_rellim(M, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
+    r"""
+    Gets p_phase for the Reck triangle using the Reciprocal RELLIM strategy.  See PNP/Note8-SqTuning.pdf.
+    :param M: Target matrix.  |M| < 1.
+    :param p_splitter: Splitter errors or other manufacturing imperfections.
+    :param X: Crossing class.  Only MZICrossing supported at present.  TODO -- why?
+    :param warn: Warns the presence of calibration errors.
+    :return: p_phase
+    """
+    N = len(M); assert (M.shape == (N, N))
+    K = np.linalg.cholesky(np.eye(N) - M.conj().T.dot(M)).T.conj()   # 1 - M*M = K*K
+    U = np.concatenate([M, K], axis=0)   # Left half of a unitary matrix.  U*U = 1.  U includes auxiliary outputs.
+    p_splitter = np.ones([N, N, X.n_splitter]) * p_splitter
+
+    return calibrateRellim(N, N, 2*N, U, p_splitter, X, lambda i: range(N+1), warn)
+
+def reckdec_rellim(U, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
+    r"""
+    Gets p_phase for the Reck triangle using the Reciprocal RELLIM strategy.  See PNP/Note8-SqTuning.pdf.
+    :param U: Target matrix.  Unitary.
+    :param p_splitter: Splitter errors or other manufacturing imperfections.
+    :param X: Crossing class.  Only MZICrossing supported at present.  TODO -- why?
+    :param warn: Warns the presence of calibration errors.
+    :return: p_phase
+    """
+    N = len(U); assert (U.shape == (N, N))
+    p_splitter = np.ones([N, N, X.n_splitter]) * p_splitter
+    p_splitter.reshape([N*N, 2])[N-1::N-1,:] = -np.pi/4
+    return calibrateRellim(N, N, N, U, p_splitter, X, lambda i: range(i+1, N+1), warn)
+
+
+class ReckSquare(SquareNetwork):
+    def __init__(self, p_phase=0.0, p_splitter=0.0, M=None, method='direct'):
+        N = len(M) if (M is not None) else len(p_phase)
+        if (type(p_splitter) != np.ndarray): p_splitter = np.ones([N, N, 2])*p_splitter
+        p_splitter = np.array(p_splitter)
+        p_splitter.reshape([N*N, 2])[N-1::N-1,:] = -np.pi/4
+        if (M is not None):
+            if (method == 'direct'):
+                super(ReckSquare, self).__init__(p_phase, p_splitter, MZICrossing(), M)
+            elif (method == 'rellim'):
+                p_phase = reckdec_rellim(M, p_splitter)  # <-- All the hard work goes here.
+                super(ReckSquare, self).__init__(p_phase, p_splitter, MZICrossing())
+            else:
+                raise ValueError(method)
+        else:
+            super(ReckSquare, self).__init__(p_phase, p_splitter, MZICrossing())
+
+    def matrix(self, p_phase=None, p_splitter=None, aux=False):
+        if (p_splitter is not None):
+            p_splitter = np.array(p_splitter) * np.ones([self.N, self.N, 2])
+            p_splitter.reshape([self.N*self.N, 2])[self.N-1::self.N-1,:] = -np.pi/4
+        else:
+            p_splitter = self.p_splitter
+        return super(ReckSquare, self).matrix(p_phase, p_splitter, aux)

@@ -1,5 +1,5 @@
 # Meshes package.
-# Ryan Hamerly, 7/11/20
+# Ryan Hamerly, 12/10/20
 #
 # Implements the MeshNetwork class, which can be used for describing Reck and Clements meshes (or any other
 # beamsplitter mesh where couplings occur between neighboring waveguides).  Clements decomposition is also
@@ -10,8 +10,7 @@
 #   06/19/20: Made Reck / Clements code object-oriented using the MeshNetwork class.
 #   07/09/20: Made SquareNet subclass of MeshNetwork.  Custom crossings.  Converted from module to package.
 #   07/11/20: Custom crossings to Reck / Clements.  Reck / Clements decomposition in presence of imperfections.
-
-# TODO -- harmonize matrix naming (A for SquareNet, M for Reck, Clements currently...)
+#   12/10/20: Added reciprocal RELLIM method for calibrating SquareNet and Reck.
 
 from .crossing import Crossing, MZICrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork

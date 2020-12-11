@@ -1,5 +1,5 @@
 # meshes/reck.py
-# Ryan Hamerly, 7/9/20
+# Ryan Hamerly, 7/11/20
 #
 # Implements ReckNetwork (subclass of MeshNetwork) with code to handle the Reck decomposition.
 #

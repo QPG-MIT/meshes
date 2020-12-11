@@ -1,4 +1,4 @@
-# Meshes.py
+# meshes/mesh.py
 # Ryan Hamerly, 7/11/20
 #
 # Implements the MeshNetwork class, which can be used for describing Reck and Clements meshes (or any other

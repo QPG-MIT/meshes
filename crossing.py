@@ -1,5 +1,5 @@
 # meshes/crossing.py
-# Ryan Hamerly, 7/9/20
+# Ryan Hamerly, 12/10/20
 #
 # Implements a generic class to handle 2x2 crossings, and its most common implementation (MZI).  Handling this
 # functionality in a separate class allows one to easily switch between different crossing types (MZI, ring,
@@ -8,9 +8,10 @@
 # History
 #   07/09/20: Created this file.  Defined classes Crossing, MZICrossing.
 #   07/10/20: Added clemshift() functionality (convert T(p)* psi -> psi' T(p') for Clements decomposition).
+#   12/10/20: Added MZICrossingOutPhase with phase shifter on the lower output.
 
 import numpy as np
-from typing import Any
+from typing import Any, Tuple
 
 class Crossing:
     @property
@@ -36,7 +37,7 @@ class Crossing:
         :return: Array of size (n_phase, 2, 2) or (n_phase, 2, 2, k)
         """
         raise NotImplementedError()
-    def Tsolve(self, T, ind, p_splitter: Any=0.):
+    def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
         r"""
         Finds the value of p_phase that sets a certain matrix element to the target T.
         ind=0: targets T[0, 0]
@@ -49,7 +50,7 @@ class Crossing:
         :return: (p_phase, err), where err=1 if the target was unreachable.
         """
         raise NotImplementedError()
-    def clemshift(self, phi, p_phase, p_splitter: Any=0):
+    def clemshift(self, phi, p_phase, p_splitter: Any=0) -> Tuple[Tuple, Tuple]:
         r"""
         Performs the phase-shifter identity employed in the Clements decomposition: Tdag(p) * PS -> PS' * T(p')
         :param phi: Phase shifts [PS].  Length-2 array.
@@ -58,7 +59,13 @@ class Crossing:
         :return: A pair (p', PS') containing new parameters and shifted phases.
         """
         raise NotImplementedError()
-
+    def flip(self) -> 'Crossing':
+        r"""
+        Flips the location of the phase shifter from the top input to the bottom output.  Used in the Reciprocal RELLIM
+        calibration scheme.
+        :return: A meshes.Crossing object.
+        """
+        raise NotImplementedError()
 
     def Tdag(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         r"""
@@ -69,21 +76,23 @@ class Crossing:
         """
         T = self.T(p_phase, p_splitter)
         return T.conj().transpose((1, 0, 2) if T.ndim == 3 else (1, 0))
-    def rmult_falling(self, M, p_phase, p_splitter: Any=0.):
+    def rmult_falling(self, M, p_phase, p_splitter: Any=0., inplace=True) -> np.ndarray:
         r"""
         Right-multiplies by matrix T for a falling diagonal, i.e. M -> M T.
         T = T_n T_{n-1} ... T_1.  So we right-multiply in reverse order.
         :param M: Matrix to be multiplied.
         :param p_phase: Phase-shifter (or other d.o.f.) information.
         :param p_splitter: Splitter errors or other manufacturing imperfections.
-        :return:
+        :param inplace: Whether to multiply M -> M*T in place
+        :return: The matrix M*T.
         """
+        if not inplace: M = np.array(M)
         N = p_phase.shape[0]; assert (N == M.shape[1]-1); p_splitter = p_splitter * np.ones((N, self.n_splitter))
         for (i, p_phase_i, p_splitter_i) in zip(range(N)[::-1], p_phase[::-1], p_splitter[::-1]):
             M[:, i:i+2] = M[:, i:i+2].dot(self.T(p_phase_i, p_splitter_i))
         return M
 
-    def dot(self, p_phase, p_splitter, x, dag=False):
+    def dot(self, p_phase, p_splitter, x, dag=False) -> np.ndarray:
         r"""
         Performs the dot product T*x.  Can be used for a single splitter or an array.
         :param p_phase: Array of size (n_phase,) or (M/2, n_phase)
@@ -97,7 +106,7 @@ class Crossing:
         (m, n) = x.shape; T = (self.Tdag if dag else self.T)(p_phase, p_splitter).reshape([2,2,m//2]).transpose((2,0,1))
         return (T.reshape(T.shape + (1,)) * x.reshape([m//2, 1, 2, n])).sum(axis=2).reshape(x.shape)
 
-    def rdot(self, p_phase, p_splitter, y, dag=False):
+    def rdot(self, p_phase, p_splitter, y, dag=False) -> np.ndarray:
         r"""
         Performs the right dot product y*T.  Can be used for a single splitter or an array.
         :param p_phase: Array of size (n_phase,) or (M/2, n_phase)
@@ -111,7 +120,7 @@ class Crossing:
         (m, n) = y.shape; T = (self.Tdag if dag else self.T)(p_phase, p_splitter).reshape([2,2,n//2]).transpose((2,0,1))
         return (T.reshape((1,) + T.shape) * y.reshape([m, n//2, 2, 1])).sum(axis=2).reshape(y.shape)
 
-    def grad(self, p_phase, p_splitter, x, gradY):
+    def grad(self, p_phase, p_splitter, x, gradY) -> np.ndarray:
         r"""
         Obtains the gradient dJ/d[p_phase], using forward- and back-propagating fields x, gradY.
         :param p_phase: Array of size (k, n_phase)
@@ -144,13 +153,13 @@ class MZICrossing(Crossing):
         Here p_phase = (theta, phi) and p_splitter = (beta, beta').
         """
         pass
-    def T(self, p_phase, p_splitter: Any=0.):
+    def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         (theta, phi) = np.array(p_phase).T; beta = np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2
         (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1], theta]]
         return np.exp(1j*theta) * np.array([[np.exp(1j*phi) * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
                                             [np.exp(1j*phi) * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
 
-    def dT(self, p_phase, p_splitter: Any=0.):
+    def dT(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         (theta, phi) = np.array(p_phase).T; beta = np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2
         (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1], theta]]
         return (np.exp(1j*np.array([[[phi+theta, theta]]])) *
@@ -159,36 +168,36 @@ class MZICrossing(Crossing):
                           [[1j*(1j*S*Cm-C*Sp),                   0*S                               ],
                            [1j*(1j*C*Cp+S*Sm),                   0*S                               ]]]))
 
-    def Tsolve(self, T, ind, p_splitter: Any=0.):
+    def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
         beta = p_splitter if np.iterable(p_splitter) else (p_splitter, p_splitter)
         (Cp, Cm, Sp, Sm) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1]]]
         if (ind in [0, (0, 0), 'T11']):
             # Input target T = T[0, 0]
             S2 = (np.abs(T)**2 - Sp**2) / (Cm**2 - Sp**2)
-            err = 1*((S2 < 0) or (S2 > 1)); theta = np.arcsin(np.sqrt(np.clip(S2, 0, 1)))
+            err = 1*((S2 < 0) or (S2 > 1)); theta = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
             phi = np.angle(T) - np.angle(1j*Cm*np.sin(theta) - np.cos(theta)*Sp) - theta
         elif (ind in [1, (1, 0), 'T21']):
             # Input target T = T[1, 0]
             S2 = (Cp**2 - np.abs(T)**2) / (Cp**2 - Sm**2)
-            err = 1*((S2 < 0) or (S2 > 1)); theta = np.arcsin(np.sqrt(np.clip(S2, 0, 1)))
+            err = 1*((S2 < 0) or (S2 > 1)); theta = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
             phi = np.angle(T) - np.angle(1j*Cp*np.cos(theta) + np.sin(theta)*Sm) - theta
         elif (ind == 'T1:'):
             # Input target T[1, :] = (T11, T12) and try to match the ratio T12/T11.
             R2 = np.abs(T[1])**2/(np.abs(T[0])**2 + 1e-30); S2 = (Cp**2 - R2*Sp**2)/((Cp**2-Sm**2) + R2*(Cm**2-Sp**2))
-            err = 1*((S2 < 0) or (S2 > 1)); theta = np.arcsin(np.sqrt(np.clip(S2, 0, 1)))
+            err = 1*((S2 < 0) or (S2 > 1)); theta = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
             (C, S) = (np.cos(theta), np.sin(theta))
             phi = np.angle(1j*C*Cp - S*Sm) - np.angle(1j*Cm*S - C*Sp) + np.angle(T[0]) - np.angle(T[1])
         elif (ind == 'T2:'):
             # Input target T[2, :] = (T21, T22) and try to match the ratio T22/T21.
             R2 = np.abs(T[1])**2/(np.abs(T[0])**2 + 1e-30); S2 = (-Sp**2 + R2*Cp**2)/((Cm**2-Sp**2) + R2*(Cp**2-Sm**2))
-            err = 1*((S2 < 0) or (S2 > 1)); theta = np.arcsin(np.sqrt(np.clip(S2, 0, 1)))
+            err = 1*((S2 < 0) or (S2 > 1)); theta = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
             (C, S) = (np.cos(theta), np.sin(theta))
             phi = np.angle(-1j*Cm*S - Sp*C) - np.angle(1j*Cp*C + Sm*S) + np.angle(T[0]) - np.angle(T[1])
         else:
             raise NotImplementedError()
         return ((theta, phi), err)
 
-    def clemshift(self, psi, p_phase, p_splitter: Any=0):
+    def clemshift(self, psi, p_phase, p_splitter: Any=0) -> Tuple[Tuple, Tuple]:
         # Transformation: T(p)* D(psi) -> D(psi') T(p').
         # Since T(p) = t(theta) D([phi, 0]), we have:
         # T(p)* D(psi) = D([-phi, 0]) t(theta)* D([psi1, psi2]) -> D([psi1', psi2']) t(theta') D([phi', 0])
@@ -208,4 +217,46 @@ class MZICrossing(Crossing):
         psi2_p  = psi2
         psi1_p  = psi2 - phi - np.angle(t[1, 0]) - np.angle(tp[0, 1])
         phi_p   = psi1 - phi - psi1_p
-        return ([theta_p, phi_p], [psi1_p, psi2_p])
+        return ((theta_p, phi_p), (psi1_p, psi2_p))
+
+    def flip(self) -> Crossing:
+        return MZICrossingOutPhase()
+
+
+class MZICrossingOutPhase(MZICrossing):
+    def __init__(self):
+        r"""
+        Class implementing the MZI crossing with phase shifter on the output:
+        -->--| (pi/4    |--[2*theta]--| (pi/4   |--------->--
+        -->--|  +beta') |-------------|  +beta) |--[phi]-->--
+        Here p_phase = (theta, phi) and p_splitter = (beta, beta').
+        """
+        pass
+    def _p_splitter(self, p_splitter):
+        # Gets the splitter angles for the flipped MZICrossing element.
+        beta = np.array(p_splitter if np.iterable(p_splitter) else [p_splitter]*2).T
+        beta = beta[::-1]; beta[0] += np.pi/2; beta[1] -= np.pi/2; return beta
+
+    # Based on the identity:
+    # T_out(theta, phi, b1, b2) = T_in(theta, phi, b2+pi/2, b1-pi/2)[::-1,::-1].T
+    # where T_out has phase shifter on output 2, T_in on input 1.
+    def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        T_in = super(MZICrossingOutPhase, self).T(p_phase, self._p_splitter(p_splitter))
+        return T_in[::-1,::-1].T if T_in.ndim == 2 else T_in[:,::-1,::1].transpose(0, 2, 1)
+    def dT(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        dT_in = super(MZICrossingOutPhase, self).dT(p_phase, self._p_splitter(p_splitter))
+        return dT_in[:,::-1,::-1].transpose(0, 2, 1) if dT_in.ndim == 3 else dT_in[:,:,::-1,::1].transpose(0, 1, 3, 2)
+    def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
+        # Just calls Tsolve from MZICrossing with appropriate transformations.
+        # I'm really not sure why T transforms as such in the T:1, T:2 cases.  But it works, numerically.
+        p_splitter = self._p_splitter(p_splitter)
+        if   (ind in [(1, 1), 'T22']): (ind_in, T) = ('T11', T)
+        elif (ind in [(1, 0), 'T21']): (ind_in, T) = ('T21', T)
+        elif (ind == 'T:1'):           (ind_in, T) = ('T1:', (-T[0].conjugate(), T[1].conjugate()))
+        elif (ind == 'T:2'):           (ind_in, T) = ('T2:', (-T[0].conjugate(), T[1].conjugate()))
+        else: raise NotImplementedError(ind)
+        return super(MZICrossingOutPhase, self).Tsolve(T, ind_in, p_splitter)
+    def clemshift(self, psi, p_phase, p_splitter: Any=0) -> Tuple[Tuple, Tuple]:
+        raise NotImplementedError()
+    def flip(self) -> Crossing:
+        return MZICrossing()
