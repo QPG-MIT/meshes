@@ -14,7 +14,7 @@
 import autograd.numpy as npa
 import numpy as np
 from typing import List, Any
-from .crossing import Crossing, MZICrossing
+from .crossing import Crossing, MZICrossing, MZICrossingOutPhase
 
 
 # The base class MeshNetwork.
@@ -90,6 +90,7 @@ class StructuredMeshNetwork(MeshNetwork):
     lens: List[int]
     shifts: List[int]
     X: Crossing
+    phi_pos: str
 
     def __init__(self,
                  N: int,
@@ -99,7 +100,8 @@ class StructuredMeshNetwork(MeshNetwork):
                  p_splitter: Any=0.,
                  p_crossing=None,
                  phi_out=None,
-                 X: Crossing=MZICrossing()):
+                 X: Crossing=MZICrossing(),
+                 phi_pos='out'):
         r"""
         Manages the beamsplitters for a Clements beamsplitter mesh.
         :param N: Number of inputs / outputs.
@@ -110,12 +112,13 @@ class StructuredMeshNetwork(MeshNetwork):
         """
         self.X = X
         self._N = N
-        #assert N%2 == 0
+        assert phi_pos in ['in', 'out']
         self.lens = lens; n_cr = sum(lens)
         self.shifts = shifts
         self.inds = np.cumsum([0] + list(lens)).tolist()
         self.p_phase = p_phase * np.ones(n_cr*X.n_phase + N, dtype=np.float)
         self.p_splitter = np.array(p_splitter)
+        self.phi_pos = phi_pos
         if not (p_crossing is None): self.p_crossing[:] = p_crossing
         if not (phi_out is None): self.phi_out[:] = phi_out
         assert len(shifts) == len(lens)
@@ -172,12 +175,14 @@ class StructuredMeshNetwork(MeshNetwork):
         v = np.array(v, dtype=np.complex)
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
         # Loop through the crossings, one row at a time.  Then apply the final phase shifts.
+        if (self.phi_pos == 'in'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
         for (i1, i2, L, s) in zip(self.inds[:-1], self.inds[1:], self.lens, self.shifts):
             v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L])
-        v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+        if (self.phi_pos == 'out'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
         return v
 
     def grad_phi(self, v, w, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None):
+        assert self.phi_pos == 'out'  # TODO -- handle phase shifts on inputs too.
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
         vList = np.zeros((len(self.lens)+1,) + v.shape, dtype=np.complex); vList[0] = v
         grad = np.zeros(len(self.p_phase), dtype=np.float)
@@ -197,3 +202,31 @@ class StructuredMeshNetwork(MeshNetwork):
             grad_crossing[i1:i2] = self.X.grad(p_crossing[i1:i2], p_splitter[i1:i2], vList[n, s:s+2*L], w[s:s+2*L])
             w[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], w[s:s+2*L], True)
         return (grad, w)
+
+    def flip(self, inplace=False) -> 'StructuredMeshNetwork':
+        r"""
+        Flips the mesh, i.e. from one with output phase shifters to input phase shifters and vice versa.  Only works
+        for MZI meshes.
+        :param inplace: Performs the operation inplace or returns a copy.
+        :return: The flipped StructuredMeshNetwork object.
+        """
+        if not inplace:
+            self = StructuredMeshNetwork(self.N, self.lens, self.shifts, np.array(self.p_phase),
+                                         np.array(self.p_splitter), X=self.X, phi_pos=self.phi_pos)
+        if (self.phi_pos == 'out'):
+            assert isinstance(self.X, MZICrossing)
+            self.X = MZICrossingOutPhase()
+            for (m, len, shift, ind) in list(zip(range(self.L), self.lens, self.shifts, self.inds))[::-1]:
+                phi = self.p_crossing[ind:ind+len, 1]
+                (psi1, psi2) = self.phi_out[shift:shift+2*len].reshape([len, 2]).T
+                (phi[:], psi1[:], psi2[:]) = np.array([psi2-psi1, phi+psi1, psi1])
+            self.phi_pos = 'in'
+        else:
+            assert isinstance(self.X, MZICrossingOutPhase)
+            self.X = MZICrossing()
+            for (m, len, shift, ind) in list(zip(range(self.L), self.lens, self.shifts, self.inds)):
+                phi = self.p_crossing[ind:ind+len, 1]
+                (psi1, psi2) = self.phi_out[shift:shift+2*len].reshape([len, 2]).T
+                (phi[:], psi1[:], psi2[:]) = np.array([psi1-psi2, psi2, phi+psi2])
+            self.phi_pos = 'out'
+        return self

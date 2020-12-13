@@ -235,17 +235,17 @@ class MZICrossingOutPhase(MZICrossing):
     def _p_splitter(self, p_splitter):
         # Gets the splitter angles for the flipped MZICrossing element.
         beta = np.array(p_splitter if np.iterable(p_splitter) else [p_splitter]*2).T
-        beta = beta[::-1]; beta[0] += np.pi/2; beta[1] -= np.pi/2; return beta
+        beta = beta[::-1]; beta[0] += np.pi/2; beta[1] -= np.pi/2; return beta.T
 
     # Based on the identity:
     # T_out(theta, phi, b1, b2) = T_in(theta, phi, b2+pi/2, b1-pi/2)[::-1,::-1].T
     # where T_out has phase shifter on output 2, T_in on input 1.
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         T_in = super(MZICrossingOutPhase, self).T(p_phase, self._p_splitter(p_splitter))
-        return T_in[::-1,::-1].T if T_in.ndim == 2 else T_in[:,::-1,::1].transpose(0, 2, 1)
+        return T_in[::-1,::-1].T if T_in.ndim == 2 else T_in[::-1,::-1].transpose(1, 0, 2)
     def dT(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         dT_in = super(MZICrossingOutPhase, self).dT(p_phase, self._p_splitter(p_splitter))
-        return dT_in[:,::-1,::-1].transpose(0, 2, 1) if dT_in.ndim == 3 else dT_in[:,:,::-1,::1].transpose(0, 1, 3, 2)
+        return dT_in[:,::-1,::-1].transpose(0, 2, 1) if dT_in.ndim == 3 else dT_in[:,:,::-1,::-1].transpose(0, 2, 1, 3)
     def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
         # Just calls Tsolve from MZICrossing with appropriate transformations.
         # I'm really not sure why T transforms as such in the T:1, T:2 cases.  But it works, numerically.

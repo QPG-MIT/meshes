@@ -11,7 +11,7 @@
 
 import numpy as np
 import warnings
-from typing import Any
+from typing import Any, Tuple
 from .mesh import StructuredMeshNetwork
 from .crossing import Crossing, MZICrossing
 
@@ -44,6 +44,30 @@ class ClementsNetwork(StructuredMeshNetwork):
                           pars_Smat.reshape([N//2, N, X.n_phase])[:, :-1, :]).reshape(N*(N-1)//2, X.n_phase)
         super(ClementsNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
                                               p_crossing=p_crossing, phi_out=phi_out, X=X)
+
+    def split(self) -> Tuple[StructuredMeshNetwork, StructuredMeshNetwork]:
+        r"""
+        Splits the mesh into two triangles: upper-left and lower-right.
+        :return: The triangle parts (M1, M2), where the output of M1 feeds into M2.
+        """
+        N = self.N; inds = np.array(self.inds)
+        assert (N > 2)
+        (L1, L2) = [N//2*2-1,                    (N-1)//2*2                        ]
+        shifts   = [np.arange(L1)%2,             N-2 - np.arange(L2)               ]
+        lens     = [(N//2*2-np.arange(L1))//2,   (np.arange(L2)+2)//2              ]
+        d_inds   = [np.array([0]*L1),            (np.arange(L2)[::-1]+((N+1)%2))//2]
+        inds     = [inds[np.arange(L1)],         inds[np.arange(self.L-L2, self.L)]]
+        phi_outs = np.outer([1, 0] if self.phi_pos == 'in' else [0, 1], self.phi_out)
+        meshes   = []
+        for (L, shift, len, d_ind, ind, phi_out) in zip([L1, L2], shifts, lens, d_inds, inds, phi_outs):
+            p_crossing = np.concatenate([self.p_crossing[i+di:i+di+l] for (i, di, l) in zip(ind, d_ind, len)])
+            p_splitter = (np.concatenate([self.p_splitter[i+di:i+di+l] for (i, di, l) in zip(ind, d_ind, len)])
+                          if self.p_splitter.ndim else self.p_splitter)
+            meshes.append(StructuredMeshNetwork(self.N, len.tolist(), shift.tolist(),
+                                                p_crossing=p_crossing, p_splitter=p_splitter, phi_out=phi_out,
+                                                X=self.X, phi_pos=self.phi_pos))
+        return tuple(meshes)
+
 
 
 # Miscellaneous functions and the Clements decomposition.
