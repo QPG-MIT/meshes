@@ -9,10 +9,12 @@
 #   06/19/20: Made Reck / Clements code object-oriented using the MeshNetwork class (meshes.py).
 #   07/09/20: Turned module into package, renamed file mesh.py.
 #   07/10/20: Added compatibility for custom crossings in crossing.py.
+#   12/15/20: Added reciprocal RELLIM tuning method for triangular meshes.
 
 
 import autograd.numpy as npa
 import numpy as np
+import warnings
 from typing import List, Any
 from .crossing import Crossing, MZICrossing, MZICrossingOutPhase
 
@@ -41,7 +43,7 @@ class MeshNetwork:
         Output dimension of the mesh network.  Thus, self.matrix().shape == (self.M, self.N)
         """
         raise NotImplementedError()
-    def dot(self, v, p_phase=None, p_splitter=None):
+    def dot(self, v, p_phase=None, p_splitter=None) -> np.ndarray:
         r"""
         Computes the dot product between the splitter and a vector v.
         :param v: Input vector / matrix.
@@ -50,7 +52,7 @@ class MeshNetwork:
         :return: Output vector / matrix.
         """
         raise NotImplementedError()
-    def matrix(self, p_phase=None, p_splitter=None):
+    def matrix(self, p_phase=None, p_splitter=None) -> np.ndarray:
         r"""
         Computes the input-output matrix.  Equivalent to self.dot(np.eye(self.N))
         :param p_phase: Phase parameters.  Defaults to stored values.
@@ -58,7 +60,7 @@ class MeshNetwork:
         :return: NxN matrix.
         """
         return self.dot(np.eye(self.N), p_phase, p_splitter)
-    def grad_phi(self, v, w, p_phase=None, p_splitter=None):
+    def grad_phi(self, v, w, p_phase=None, p_splitter=None) -> np.ndarray:
         r"""
         Computes the gradient with respect to phase shifts phi.
         :param v: Input matrix / vector (normally np.eye(M)), size (M, ...)
@@ -68,7 +70,7 @@ class MeshNetwork:
         :return:
         """
         raise NotImplementedError()
-    def grad_phi_target(self, U_target, p_phase=None, p_splitter=None):
+    def grad_phi_target(self, U_target, p_phase=None, p_splitter=None) -> np.ndarray:
         r"""
         Gets the gradient of the L2 norm |U - U_target|^2 with respect to the phase parameters.
         :param U_target: Target matrix, size (M, N)
@@ -149,6 +151,9 @@ class StructuredMeshNetwork(MeshNetwork):
         :return: array of size (self.n_cr, self.X.n_phase)
         """
         return self._get_p_crossing(None)
+    @p_crossing.setter
+    def p_crossing(self, p):
+        self.p_crossing[:] = p
     def _get_p_crossing(self, p_phase=None):
         return (self.p_phase if (p_phase is None) else p_phase)[:-self.N].reshape([self.n_cr, self.X.n_phase])
     @property
@@ -158,6 +163,9 @@ class StructuredMeshNetwork(MeshNetwork):
         :return: array of size (self.N,)
         """
         return self._get_phi_out(None)
+    @phi_out.setter
+    def phi_out(self, p):
+        self.phi_out[:] = p
     def _get_phi_out(self, p_phase=None):
         return (self.p_phase if (p_phase is None) else p_phase)[-self.N:]
 
@@ -203,7 +211,15 @@ class StructuredMeshNetwork(MeshNetwork):
             w[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], w[s:s+2*L], True)
         return (grad, w)
 
-    def flip(self, inplace=False) -> 'StructuredMeshNetwork':
+    def copy(self) -> 'StructuredMeshNetwork':
+        r"""
+        Returns a copy of the mesh.
+        :return:
+        """
+        return StructuredMeshNetwork(self.N, self.lens.copy(), self.shifts.copy(), np.array(self.p_phase),
+                                     np.array(self.p_splitter), X=self.X, phi_pos=self.phi_pos)
+
+    def flip_crossings(self, inplace=False) -> 'StructuredMeshNetwork':
         r"""
         Flips the mesh, i.e. from one with output phase shifters to input phase shifters and vice versa.  Only works
         for MZI meshes.
@@ -211,8 +227,8 @@ class StructuredMeshNetwork(MeshNetwork):
         :return: The flipped StructuredMeshNetwork object.
         """
         if not inplace:
-            self = StructuredMeshNetwork(self.N, self.lens, self.shifts, np.array(self.p_phase),
-                                         np.array(self.p_splitter), X=self.X, phi_pos=self.phi_pos)
+            self = self.copy()
+
         if (self.phi_pos == 'out'):
             assert isinstance(self.X, MZICrossing)
             self.X = MZICrossingOutPhase()
@@ -230,3 +246,90 @@ class StructuredMeshNetwork(MeshNetwork):
                 (phi[:], psi1[:], psi2[:]) = np.array([psi1-psi2, psi2, phi+psi2])
             self.phi_pos = 'out'
         return self
+
+    def flip(self, inplace=False) -> 'StructuredMeshNetwork':
+        r"""
+        Flips the entire network geometry about both position and time axes.  The resulting transfer matrix
+        transforms as U -> U[::-1,::-1].T
+        :param self:
+        :param inplace: Perform the operation inplace.
+        :return:
+        """
+        if not inplace:
+            self = StructuredMeshNetwork(self.N, self.lens.copy(), self.shifts.copy(), np.array(self.p_phase),
+                                         np.array(self.p_splitter), X=self.X, phi_pos=self.phi_pos)
+        assert isinstance(self.X, MZICrossing) or isinstance(self.X, MZICrossingOutPhase)
+        self.X = self.X.flip()
+        self.phi_pos = {'in': 'out', 'out': 'in'}[self.phi_pos]
+        self.p_splitter = self.p_splitter + np.zeros([self.n_cr, 2])
+        self.p_splitter = self.p_splitter[:, ::-1] + np.pi/2*np.array([[1, -1]])
+        self.p_splitter = self.p_splitter[::-1]; self.p_crossing = self.p_crossing[::-1]; self.phi_out = self.phi_out[::-1]
+        self.lens = self.lens[::-1]; self.shifts = (self.N-2*np.array(self.lens)-self.shifts[::-1]).tolist()
+        self.inds = np.cumsum([0] + self.lens).tolist()
+
+        return self
+
+    @property
+    def grid_phase(self) -> np.ndarray:
+        r"""
+        Arranges the data of self.p_crossing onto a 2D array.
+        :return:
+        """
+        out = np.zeros([self.L, (self.N+1)//2, self.X.n_phase]) * np.nan
+        for (i, j0, nj, ind) in zip(range(self.L), self.shifts, self.lens, self.inds):
+            out[i, j0//2:j0//2+nj, :] = self.p_crossing[ind:ind+nj, :]
+        return out
+
+    @property
+    def grid_splitter(self) -> np.ndarray:
+        r"""
+        Arranges the data of self.p_splitter onto a 2D array.
+        :return:
+        """
+        out = np.zeros([self.L, (self.N+1)//2, self.X.n_splitter]) * np.nan
+        for (i, j0, nj, ind) in zip(range(self.L), self.shifts, self.lens, self.inds):
+            out[i, j0//2:j0//2+nj, :] = self.p_splitter[ind:ind+nj, :]
+        return out
+
+
+def calibrateRellimTriangle(mesh: StructuredMeshNetwork, diag, U, Upost=None, warn=False):
+    r"""
+    A general Reciprocal RELLIM routine to calibrate an arbitrarily shaped triangular mesh.
+    :param U: Target matrix.
+    :param mesh: Mesh to configure.
+    :param diag: Direction of diagonals ['up' or 'down']
+    :param Upost: Unitary acting on outputs.  Defaults to identity.  Matrix M optimized so U = Upost*M
+    :param warn: Warns the presence of errors.
+    :return: (p_crossing, phi_out).
+    """
+    N = len(U); Upost = np.eye(N, dtype=np.complex) if (Upost is None) else np.array(Upost)
+    assert U.shape == Upost.shape == (N, N); (s, Tind, dj) = {'up': (+1, 'T:2', 1), 'down': (-1, 'T:1', 0)}[diag]
+    # Divide mesh into diagonals.  Make sure each diagonal can be uniquely targeted with a certain input waveguide.
+    pos = np.concatenate([[[i, j, 2*j+j0, i+s*(2*j+j0)]
+                           for j in range(mesh.lens[i])] for (i, j0) in enumerate(mesh.shifts)])
+    pos = pos[np.lexsort(pos[:, ::3].T)][::-1]
+    pos = np.split(pos, np.where(np.roll(pos[:,3], 1) != pos[:,3])[0])[1:]
+    assert (s*np.diff(np.concatenate([pos_i[-1:] for pos_i in pos])[:, 2]) < 0).all()  # Diagonals have distinct inputs.
+    if not isinstance(mesh.X, MZICrossingOutPhase):
+        raise NotImplementedError("Only MZICrossingOutPhase supported for now.")
+    p_splitter = mesh.p_splitter * np.ones([mesh.n_cr, 2])
+    phi_out = 0*mesh.phi_out
+    # Loop over diagonals using Reciprocal RELLIM method.
+    err = 0
+    for pos_i in pos:
+        for (i, j, ind, _) in pos_i:
+            # Adjust MZIs up the diagonal one by one.
+            ptr = mesh.inds[i] + j
+            bc = Upost[:, ind:ind+2]  # Vectors [b, c]
+            (T1k, T2k) =  bc.conj().T.dot(U[:, pos_i[-1][2]+dj])   # Targets: (T1k, T2k) ~ (b* u_i, c* u_i)
+            ((theta, phi), d_err) = mesh.X.Tsolve((T1k, T2k), Tind, p_splitter[ptr]); err += d_err
+            mesh.p_crossing[ptr, :] = (theta, phi)
+            T = mesh.X.T((theta, phi), p_splitter[ptr])
+            Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)
+        # Set input phases at the top of the diagonal.
+        phi_out[ind:ind+2] = np.angle((Upost[:, ind:ind+2].conj() * U[:, ind:ind+2]).sum(0))
+    mesh.phi_out[:] = phi_out
+    if (warn and err):
+        warnings.warn(
+            "Mesh calibration: {:d}/{:d} matrix values could not be set.".format(err, len(mesh.p_crossing)))
+

@@ -11,11 +11,12 @@
 #   07/09/20: Made SquareNet subclass of MeshNetwork.  Custom crossings.  Converted from module to package.
 #   07/11/20: Custom crossings to Reck / Clements.  Reck / Clements decomposition in presence of imperfections.
 #   12/10/20: Added reciprocal RELLIM method for calibrating SquareNet and Reck.
+#   12/15/20: Extended reciprocal RELLIM to triangular and Clements meshes.
 
 from .crossing import Crossing, MZICrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
 from .reck import ReckNetwork, reckdec
-from .clements import ClementsNetwork, clemdec
+from .clements import ClementsNetwork, SymClementsNetwork, clemdec
 from .square import SquareNetwork, SquareNetworkMZI, calibrateDiag, squaredec, squaremat
 
 import scipy.stats
