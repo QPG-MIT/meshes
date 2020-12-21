@@ -9,7 +9,8 @@
 #   06/19/20: Made Reck / Clements code object-oriented using the MeshNetwork class (meshes.py).
 #   07/09/20: Turned module into package, renamed file mesh.py.
 #   07/10/20: Added compatibility for custom crossings in crossing.py.
-#   12/15/20: Added reciprocal RELLIM tuning method for triangular meshes.
+#   12/15/20: Added Ratio Method tuning triangular meshes.
+#   12/19/20: Added Direct Method for tuning triangular meshes.
 
 
 import autograd.numpy as npa
@@ -261,9 +262,10 @@ class StructuredMeshNetwork(MeshNetwork):
         assert isinstance(self.X, MZICrossing) or isinstance(self.X, MZICrossingOutPhase)
         self.X = self.X.flip()
         self.phi_pos = {'in': 'out', 'out': 'in'}[self.phi_pos]
-        self.p_splitter = self.p_splitter + np.zeros([self.n_cr, 2])
-        self.p_splitter = self.p_splitter[:, ::-1] + np.pi/2*np.array([[1, -1]])
-        self.p_splitter = self.p_splitter[::-1]; self.p_crossing = self.p_crossing[::-1]; self.phi_out = self.phi_out[::-1]
+        self.p_splitter[:] = (self.p_splitter + np.zeros([self.n_cr, 2]))[:, ::-1] + np.pi/2*np.array([[1, -1]])
+        self.p_splitter[:] = self.p_splitter[::-1]
+        self.p_crossing = self.p_crossing[::-1]
+        self.phi_out = self.phi_out[::-1]
         self.lens = self.lens[::-1]; self.shifts = (self.N-2*np.array(self.lens)-self.shifts[::-1]).tolist()
         self.inds = np.cumsum([0] + self.lens).tolist()
 
@@ -292,44 +294,79 @@ class StructuredMeshNetwork(MeshNetwork):
         return out
 
 
-def calibrateRellimTriangle(mesh: StructuredMeshNetwork, diag, U, Upost=None, warn=False):
+def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
     r"""
-    A general Reciprocal RELLIM routine to calibrate an arbitrarily shaped triangular mesh.
-    :param U: Target matrix.
+    A general Ratio Method to calibrate an arbitrarily shaped triangular mesh.
     :param mesh: Mesh to configure.
+    :param U: Target matrix.
     :param diag: Direction of diagonals ['up' or 'down']
-    :param Upost: Unitary acting on outputs.  Defaults to identity.  Matrix M optimized so U = Upost*M
+    :param method: Programming method ['direct' or 'ratio']
     :param warn: Warns the presence of errors.
-    :return: (p_crossing, phi_out).
+    :return:
     """
-    N = len(U); Upost = np.eye(N, dtype=np.complex) if (Upost is None) else np.array(Upost)
-    assert U.shape == Upost.shape == (N, N); (s, Tind, dj) = {'up': (+1, 'T:2', 1), 'down': (-1, 'T:1', 0)}[diag]
+    if (diag == 'up') and (mesh.phi_pos == 'out'):
+        mesh.flip(True); calibrateTriangle(mesh, U, 'down', method, warn); mesh.flip(True); return
+    assert (diag == 'down') and (mesh.phi_pos == 'in')
+    X = {'direct': mesh.X.flip(), 'ratio': mesh.X}[method]
+    N = len(U); Upost = np.eye(N, dtype=np.complex); assert U.shape == (N, N)
+
     # Divide mesh into diagonals.  Make sure each diagonal can be uniquely targeted with a certain input waveguide.
-    pos = np.concatenate([[[i, j, 2*j+j0, i+s*(2*j+j0)]
+    pos = np.concatenate([[[i, j, 2*j+j0, i-(2*j+j0)]
                            for j in range(mesh.lens[i])] for (i, j0) in enumerate(mesh.shifts)])
     pos = pos[np.lexsort(pos[:, ::3].T)][::-1]
     pos = np.split(pos, np.where(np.roll(pos[:,3], 1) != pos[:,3])[0])[1:]
-    assert (s*np.diff(np.concatenate([pos_i[-1:] for pos_i in pos])[:, 2]) < 0).all()  # Diagonals have distinct inputs.
+    assert (np.diff(np.concatenate([pos_i[-1:] for pos_i in pos])[:, 2]) > 0).all()  # Diagonals have distinct inputs.
     if not isinstance(mesh.X, MZICrossingOutPhase):
         raise NotImplementedError("Only MZICrossingOutPhase supported for now.")
     p_splitter = mesh.p_splitter * np.ones([mesh.n_cr, 2])
     phi_out = 0*mesh.phi_out
-    # Loop over diagonals using Reciprocal RELLIM method.
+
     err = 0
-    for pos_i in pos:
-        for (i, j, ind, _) in pos_i:
-            # Adjust MZIs up the diagonal one by one.
-            ptr = mesh.inds[i] + j
-            bc = Upost[:, ind:ind+2]  # Vectors [b, c]
-            (T1k, T2k) =  bc.conj().T.dot(U[:, pos_i[-1][2]+dj])   # Targets: (T1k, T2k) ~ (b* u_i, c* u_i)
-            ((theta, phi), d_err) = mesh.X.Tsolve((T1k, T2k), Tind, p_splitter[ptr]); err += d_err
-            mesh.p_crossing[ptr, :] = (theta, phi)
-            T = mesh.X.T((theta, phi), p_splitter[ptr])
-            Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)
-        # Set input phases at the top of the diagonal.
-        phi_out[ind:ind+2] = np.angle((Upost[:, ind:ind+2].conj() * U[:, ind:ind+2]).sum(0))
+    if method == 'direct':
+        p = np.array([[2*j+j0, i+(2*j+j0)] for (i, j0) in enumerate(mesh.shifts) for j in range(mesh.lens[i])])
+        p = p[np.lexsort(p.T)]; outfield = dict(p[np.where(np.roll(p[:, 1], 1) != p[:, 1])[0]][:, ::-1])  # out-fields
+        X = mesh.X.flip(); assert ('T11' in X.tunable_indices);
+        env = np.maximum.accumulate((np.array(mesh.shifts) + np.array(mesh.lens)*2 - 2)[::-1])[::-1]
+        for pos_i in pos:
+            E_in = 1.0; Tlist = []; ptr_last = None; l = pos_i[-1, 2]; v = np.zeros([N], dtype=np.complex)
+            for (m, (i, j, ind, _)) in enumerate(pos_i[::-1]):  # Adjust MZIs *down* the diagonal one by one.
+                ptr = mesh.inds[i] + j
+                k = outfield[i+ind] if (i+ind in outfield) else ind  # Output index (or two) k:k+dk
+                dk = (min(2, outfield[i+ind+2]-k) if (i+ind+2 in outfield) else 2) if (i < mesh.L-1) else 1
+                T11 = (U[k:k+dk, l] - Upost[k:k+dk, :].dot(v)).sum()/(E_in*Upost[k:k+dk, ind]).sum()
+                ((theta, phi), d_err) = X.Tsolve(T11, 'T11', p_splitter[ptr]); err += d_err
+                mesh.p_crossing[ptr, 0] = theta
+                if m: mesh.p_crossing[ptr_last, 1] = phi  # Set theta for crossing & phi to *upper-left* of crossing.
+                else: phi_out[ind] = phi
+                T = X.T((theta, phi), p_splitter[ptr]); Tlist.append(T)
+                v[ind] += E_in * T[0, 0]; E_in *= T[1, 0]
+                phi_out[ind+1] = np.angle(U[k, ind+1]/(Upost[k, ind]*T[0, 1]))
+                ptr_last = ptr
+            k = (ind+1) if (i == mesh.L-1 or ind > env[i+1]) else outfield[i+ind+2]
+            dk = (min(2, outfield[i+ind+4]-k) if (i+ind+4 in outfield) else 2) if (i < mesh.L-1) else 1
+            # Set final phase shift.
+            T11 = (U[k:k+dk,l] - Upost[k:k+dk,:].dot(v))/(E_in * Upost[k,ind+1])
+            mesh.p_crossing[ptr, 1] = phi = np.angle((U[k:k+dk,l] - Upost[k:k+dk,:].dot(v)).sum()/
+                                                     (E_in * Upost[k:k+dk,ind+1]).sum())
+            Upost[:, ind+1] *= np.exp(1j*phi)
+            for (ind, T) in zip(pos_i[:, 2], Tlist[::-1]):
+                Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)   # Multiply Upost by diagonal's T.
+
+    elif method == 'ratio':
+        X = mesh.X; assert ('T:1' in X.tunable_indices)
+        for pos_i in pos:
+            for (i, j, ind, _) in pos_i:  # Adjust MZIs *up* the diagonal one by one.
+                ptr = mesh.inds[i] + j
+                bc = Upost[:, ind:ind+2]  # Vectors [b, c]
+                (T11, T21) =  bc.conj().T.dot(U[:, pos_i[-1][2]])   # Targets: (T11, T21) ~ (b* u_i, c* u_i)
+                ((theta, phi), d_err) = X.Tsolve((T11, T21), 'T:1', p_splitter[ptr]); err += d_err
+                mesh.p_crossing[ptr, :] = (theta, phi)  # Set theta for crossing & phi to *lower-right* of crossing.
+                T = X.T((theta, phi), p_splitter[ptr])
+                Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)
+            # Set input phases at the top of the diagonal.
+            phi_out[ind:ind+2] = np.angle((Upost[:, ind:ind+2].conj() * U[:, ind:ind+2]).sum(0))
+
     mesh.phi_out[:] = phi_out
     if (warn and err):
         warnings.warn(
             "Mesh calibration: {:d}/{:d} matrix values could not be set.".format(err, len(mesh.p_crossing)))
-

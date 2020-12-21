@@ -6,7 +6,7 @@
 # History
 #   11/16/19: Conceived SquareNet, wrote decomposition code (Note3/main.py)
 #   07/09/20: Moved to this file.  Created classes SquareNetwork, SquareNetworkMZI.
-#   12/10/20: Added reciprocal RELLIM tuning method for SquareNet and the associated Reck.
+#   12/10/20: Added Ratio Method tuning strategy  for SquareNet and the associated Reck.
 
 import numpy as np
 import warnings
@@ -138,15 +138,15 @@ class SquareNetwork(MeshNetwork):
         :param p_splitter: Crossing imperfections.  Scalar or size-(M, N, X.n_splitter) tensor.
         :param M: The matrix to be represented.  Real or complex, size-(N, M).  If specified, runs squaredec() to find
         the SquareNet decomposition, and any information in p_phase is overwritten.
-        :param method: Method used to find p_phase from M.  Options: 'direct', 'rellim'.
+        :param method: Method used to find p_phase from M.  Options: 'direct', 'ratio'.
         """
         self._X = X; self.p_phase = np.array(p_phase); self.p_splitter = np.array(p_splitter)
         (self._M, self._N) = M.shape if not (M is None) else self.p_phase.shape[:-1]
         if not (M is None):
             if method == 'direct':
                 self.p_phase = squaredec(M, self.p_splitter, self.X)  # <-- Where all the hard work is done
-            elif method == 'rellim':
-                self.p_phase = squaredec_rellim(M, self.p_splitter, self.X)  # <-- More hard work
+            elif method == 'ratio':
+                self.p_phase = squaredec_ratio(M, self.p_splitter, self.X)  # <-- More hard work
             else:
                 raise ValueError(method)
         assert self.p_phase.shape in [(), (self.M, self.N, self.n_phase)]
@@ -186,9 +186,9 @@ class SquareNetworkMZI(SquareNetwork):
         super(SquareNetworkMZI, self).__init__(p_phase, p_splitter, X=MZICrossing(), M=M)
 
 
-def calibrateRellim(m, n, Npost, U, p_splitter, X, jrange, warn):
+def calibrateRatio(m, n, Npost, U, p_splitter, X, jrange, warn):
     r"""
-    A general Reciprocal RELLIM routine to calibrate an m*n SquareNet or associated subgraph.
+    A general Ratio Method routine to calibrate an m*n SquareNet or associated subgraph.
     :param m: Number of falling diagonals.
     :param n: Number of rising diagonals.
     :param Npost: Total number of waveguides.
@@ -228,9 +228,9 @@ def calibrateRellim(m, n, Npost, U, p_splitter, X, jrange, warn):
             "SquareNet calibration: {:d}/{:d} matrix values could not be set.".format(err, m*n))
     return p_phase
 
-def squaredec_rellim(M, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
+def squaredec_ratio(M, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
     r"""
-    Gets p_phase for the Reck triangle using the Reciprocal RELLIM strategy.  See PNP/Note8-SqTuning.pdf.
+    Gets p_phase for the Reck triangle using the Ratio Method strategy.  See PNP/Note8-SqTuning.pdf.
     :param M: Target matrix.  |M| < 1.
     :param p_splitter: Splitter errors or other manufacturing imperfections.
     :param X: Crossing class.  Only MZICrossing supported at present.  TODO -- why?
@@ -242,11 +242,11 @@ def squaredec_rellim(M, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True
     U = np.concatenate([M, K], axis=0)   # Left half of a unitary matrix.  U*U = 1.  U includes auxiliary outputs.
     p_splitter = np.ones([N, N, X.n_splitter]) * p_splitter
 
-    return calibrateRellim(N, N, 2*N, U, p_splitter, X, lambda i: range(N+1), warn)
+    return calibrateRatio(N, N, 2*N, U, p_splitter, X, lambda i: range(N+1), warn)
 
-def reckdec_rellim(U, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
+def reckdec_ratio(U, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
     r"""
-    Gets p_phase for the Reck triangle using the Reciprocal RELLIM strategy.  See PNP/Note8-SqTuning.pdf.
+    Gets p_phase for the Reck triangle using the Ratio Method strategy.  See PNP/Note8-SqTuning.pdf.
     :param U: Target matrix.  Unitary.
     :param p_splitter: Splitter errors or other manufacturing imperfections.
     :param X: Crossing class.  Only MZICrossing supported at present.  TODO -- why?
@@ -256,7 +256,7 @@ def reckdec_rellim(U, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
     N = len(U); assert (U.shape == (N, N))
     p_splitter = np.ones([N, N, X.n_splitter]) * p_splitter
     p_splitter.reshape([N*N, 2])[N-1::N-1,:] = -np.pi/4
-    return calibrateRellim(N, N, N, U, p_splitter, X, lambda i: range(i+1, N+1), warn)
+    return calibrateRatio(N, N, N, U, p_splitter, X, lambda i: range(i+1, N+1), warn)
 
 
 class ReckSquare(SquareNetwork):
@@ -268,8 +268,8 @@ class ReckSquare(SquareNetwork):
         if (M is not None):
             if (method == 'direct'):
                 super(ReckSquare, self).__init__(p_phase, p_splitter, MZICrossing(), M)
-            elif (method == 'rellim'):
-                p_phase = reckdec_rellim(M, p_splitter)  # <-- All the hard work goes here.
+            elif (method == 'ratio'):
+                p_phase = reckdec_ratio(M, p_splitter)  # <-- All the hard work goes here.
                 super(ReckSquare, self).__init__(p_phase, p_splitter, MZICrossing())
             else:
                 raise ValueError(method)

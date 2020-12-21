@@ -11,7 +11,7 @@
 import numpy as np
 import warnings
 from typing import Any
-from .mesh import StructuredMeshNetwork
+from .mesh import StructuredMeshNetwork, calibrateTriangle
 from .crossing import Crossing, MZICrossing
 
 class ReckNetwork(StructuredMeshNetwork):
@@ -20,29 +20,49 @@ class ReckNetwork(StructuredMeshNetwork):
                  phi_out: Any=0.,
                  p_splitter: Any=0.,
                  X: Crossing=MZICrossing(),
-                 M: np.ndarray=None):
+                 M: np.ndarray=None,
+                 N: int=None,
+                 method: str=None,
+                 warn=False,
+                 phi_pos='out'):
         r"""
         Mesh network based on the Reck (triangular) decomposition.
         :param N: Number of inputs / outputs.
         :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
         :param p_splitter: Beamsplitter imperfection parameters.  Scalar or size (N(N-1)/2, X.n_splitter).
         :param M: A unitary matrix.  If specified, runs clemdec() to find the mesh realizing this unitary.
+        :param N: Size.  Used for initializing a blank Reck mesh.
+        :param method: Method used to program the Reck mesh in presence of errors: 'direct' or 'ratio'.
+        :param phi_pos: Position of phase shifts: 'in' or 'out'.
         """
-        N = len(phi_out if (M is None) else M)   # Start by getting N, shifts, lens, p_splitter
+        if (M is not None): N = len(M)  # Start by getting N, shifts, lens, p_splitter
+        elif (np.iterable(phi_out)): N = len(phi_out)
+        else: assert N != None
         shifts = list(range(N-2, 0, -1)) + list(range(0, N-1, 1))
         lens = ((N-np.array(shifts))//2).tolist()
         p_splitter = np.array(p_splitter); assert p_splitter.shape in [(), (N*(N-1)//2, X.n_splitter)]
-        if (M is None):
-            # Initialize from parameters.  Check parameters first.
-            assert p_crossing.shape == (N*(N-1)//2, X.n_phase) and phi_out.shape == (N,)
+        if (method is None):
+            if (M is None):
+                # Initialize from parameters.  Check parameters first.
+                p_crossing = p_crossing * np.ones([N*(N-1)//2, X.n_phase]); phi_out = phi_out * np.ones(N)
+            else:
+                # Initialize from a matrix.  Calls reckdec() after correctly ordering the crossings.
+                if p_splitter.ndim: p_splitter = reorder_reck(N, p_splitter, True)
+                (pars_S, ch_S, phi_out) = reckdec(M, p_splitter, X, warn)  # <-- The hard work is all done in here.
+                p_crossing = reorder_reck(N, pars_S)
+                if p_splitter.ndim: p_splitter = reorder_reck(N, p_splitter)
+            super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
+                                              p_crossing=p_crossing, phi_out=phi_out, X=X)
+            if phi_pos == 'in': self.flip_crossings(inplace=True)
         else:
-            # Initialize from a matrix.  Calls reckdec() after correctly ordering the crossings.
-            if p_splitter.ndim: p_splitter = reorder_reck(N, p_splitter, True)
-            (pars_S, ch_S, phi_out) = reckdec(M, p_splitter, X)  # <-- The hard work is all done in here.
-            p_crossing = reorder_reck(N, pars_S)
-            if p_splitter.ndim: p_splitter = reorder_reck(N, p_splitter)
-        super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
-                                          p_crossing=p_crossing, phi_out=phi_out, X=X)
+            assert phi_pos == 'in'
+            super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
+                  p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N), X=X.flip(), phi_pos='in')
+            calibrateTriangle(self, M, 'down', method, warn)
+
+
+
+
 
 
 

@@ -8,12 +8,12 @@
 #   06/18/20: Defined class ClementsNetwork (part of module meshes.py)
 #   07/09/20: Moved to this file.
 #   07/11/20: Added compatibility with custom crossings in crossing.py
-#   12/15/20: Added reciprocal RELLIM tuning method for Clements.
+#   12/15/20: Added Ratio Method tuning strategy for Clements.
 
 import numpy as np
 import warnings
 from typing import Any, Tuple
-from .mesh import MeshNetwork, StructuredMeshNetwork, calibrateRellimTriangle
+from .mesh import MeshNetwork, StructuredMeshNetwork, calibrateTriangle
 from .crossing import Crossing, MZICrossing
 
 class ClementsNetwork(StructuredMeshNetwork):
@@ -193,6 +193,7 @@ class SymClementsNetwork(MeshNetwork):
                  p_splitter: np.ndarray=0.,
                  clem: ClementsNetwork=None,
                  X: Crossing=MZICrossing(),
+                 method='ratio',
                  warn=True):
         r"""
         Constructs a symmetric Clements network.  This is the product of two triangle meshes with the phase shifts
@@ -203,6 +204,7 @@ class SymClementsNetwork(MeshNetwork):
         :param X: The crossing type.  Currently only MZICrossing supported.
         """
         assert (M is None) ^ (clem is None)
+        assert (method in ['direct', 'ratio'])
 
         if (clem is not None):
             # Just split the existing Clements matrix into its triangles.
@@ -214,21 +216,21 @@ class SymClementsNetwork(MeshNetwork):
             (m1, m2) = clem.split(); (M1, M2) = (m1.matrix(), m2.matrix())
 
         # Calibrate each triangle independently.
-        clem = ClementsNetwork(p_splitter=p_splitter, N=clem.N, X=X.flip(), phi_pos='in')
-        (m1, m2) = clem.split(); m1.flip(True); m1.flip_crossings(True)
-        calibrateRellimTriangle(m2, 'down', M2, warn=warn)               #  <-- Hard work done here.
-        calibrateRellimTriangle(m1, 'down', M1[::-1,::-1].T, warn=warn)  #  <-- Hard work done here.
+        N = clem.N; clem = ClementsNetwork(N=N, X=X.flip(), phi_pos='in')
+        (m1, m2) = clem.split();
+        self.p_splitter = s = np.array(p_splitter) * np.ones([clem.n_cr, clem.X.n_splitter]);
+        m1.flip_crossings(True)
+
+        (m1.p_splitter, m2.p_splitter) = np.split(s, [m1.n_cr])
+
+        m1.flip(True);
+        calibrateTriangle(m2, M2, 'down', method, warn=warn)           #  <-- Hard work done here.
+        calibrateTriangle(m1, M1[::-1,::-1].T, 'down', method, warn=warn)  #  <-- Hard work done here.
+        m1.flip(True)
+
         if (clem.N%2): m1.phi_out[-1] = np.angle(M1[-1,-1])
         else: m2.phi_out[0] = np.angle(M2[0,0])
-        m1.flip(True)
         m2.phi_out += m1.phi_out; m1.phi_out = 0
-        if (np.abs(np.diff(m1.p_splitter.flatten())) < 1e-12).all(): m1.p_splitter = np.array(m1.p_splitter[0,0])
-
-        if m1.p_splitter.ndim > 0:
-            self.p_splitter = np.concatenate([m1.p_splitter, m2.p_splitter])
-            (m1.p_splitter, m2.p_splitter) = np.split(self.p_splitter, [len(m1.p_splitter)])
-        else:
-            self.p_splitter = m1.p_splitter; m2.p_splitter = m1.p_splitter
         self.p_phase = np.concatenate([m1.p_phase, m2.p_phase])
         (m1.p_phase, m2.p_phase) = np.split(self.p_phase, [len(m1.p_phase)])
         self.m1 = m1
@@ -279,7 +281,7 @@ class SymClementsNetwork(MeshNetwork):
         return self.m1.N
     def dot(self, v, p_phase=None, p_splitter=None) -> np.ndarray:
         (p1, p2) = np.split(p_phase, [len(self.m1.p_phase)]) if (np.iterable(p_phase)) else [p_phase]*2
-        (s1, s2) = np.split(p_splitter, [len(self.m1.p_splitter)]) if (np.iterable(p_splitter)) else [p_splitter]*2
+        (s1, s2) = np.split(p_splitter, [self.m1.n_cr]) if (np.iterable(p_splitter)) else [p_splitter]*2
         return self.m2.dot(self.m1.dot(v, p1, s1), p2, s2)
 
     # TODO -- implement grad_phi

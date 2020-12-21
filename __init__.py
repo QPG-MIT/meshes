@@ -10,8 +10,9 @@
 #   06/19/20: Made Reck / Clements code object-oriented using the MeshNetwork class.
 #   07/09/20: Made SquareNet subclass of MeshNetwork.  Custom crossings.  Converted from module to package.
 #   07/11/20: Custom crossings to Reck / Clements.  Reck / Clements decomposition in presence of imperfections.
-#   12/10/20: Added reciprocal RELLIM method for calibrating SquareNet and Reck.
-#   12/15/20: Extended reciprocal RELLIM to triangular and Clements meshes.
+#   12/10/20: Added Ratio Method strategy for calibrating SquareNet and Reck.
+#   12/15/20: Extended Ratio Method to triangular and Clements meshes.
+#   12/19/20: Added MZICrossingSym and Direct Method for tuning triangular and Clements meshes.
 
 from .crossing import Crossing, MZICrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
