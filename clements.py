@@ -9,9 +9,11 @@
 #   07/09/20: Moved to this file.
 #   07/11/20: Added compatibility with custom crossings in crossing.py
 #   12/15/20: Added Ratio Method tuning strategy for Clements.
+#   01/05/21: Added new Clements tuning method.
 
 import numpy as np
 import warnings
+from numba import njit
 from typing import Any, Tuple
 from .mesh import MeshNetwork, StructuredMeshNetwork, calibrateTriangle
 from .crossing import Crossing, MZICrossing
@@ -188,6 +190,10 @@ class SymClementsNetwork(MeshNetwork):
     m1: StructuredMeshNetwork
     m2: StructuredMeshNetwork
 
+    @property
+    def n_cr(self):
+        return self.N*(self.N-1)//2
+
     def __init__(self,
                  M: np.ndarray=None,
                  p_splitter: np.ndarray=0.,
@@ -200,42 +206,49 @@ class SymClementsNetwork(MeshNetwork):
         along the rising center diagonal.
         :param M: Target matrix.
         :param p_splitter: Splitter imperfections.
-        :param clem:
+        :param clem: If specified, converts a ClementsNetwork to SymClementsNetwork.
         :param X: The crossing type.  Currently only MZICrossing supported.
+        :param method: Calibration method used: 'direct', 'ratio', 'mod', 'new'.
+        :param warn: Throws a warning if mesh cannot be calibrated correctly.
         """
         assert (M is None) ^ (clem is None)
-        assert (method in ['direct', 'ratio'])
+        assert (method in ['direct', 'ratio', 'mod', 'new'])
+        N = len(M) if (clem is None) else clem.N
 
         if (clem is not None):
             # Just split the existing Clements matrix into its triangles.
             (m1, m2) = clem.split(); (M1, M2) = (m1.matrix(), m2.matrix())
             m2.flip_crossings(inplace=True)
-        else:
+        elif (method != 'new'):
             # Get the Clements decomposition of M and break it up into upper & lower triangles M = M2*M1.
             clem = ClementsNetwork(M=M, X=X)
             (m1, m2) = clem.split(); (M1, M2) = (m1.matrix(), m2.matrix())
 
         # Calibrate each triangle independently.
-        N = clem.N; clem = ClementsNetwork(N=N, X=X.flip(), phi_pos='in')
+        clem = ClementsNetwork(N=N, X=X.flip(), phi_pos='in')
         (m1, m2) = clem.split();
         self.p_splitter = s = np.array(p_splitter) * np.ones([clem.n_cr, clem.X.n_splitter]);
         m1.flip_crossings(True)
 
         (m1.p_splitter, m2.p_splitter) = np.split(s, [m1.n_cr])
 
-        m1.flip(True);
-        calibrateTriangle(m2, M2, 'down', method, warn=warn)           #  <-- Hard work done here.
-        calibrateTriangle(m1, M1[::-1,::-1].T, 'down', method, warn=warn)  #  <-- Hard work done here.
-        m1.flip(True)
+        if (method != 'new'):
+            m1.flip(True);
+            calibrateTriangle(m2, M2, 'down', method, warn=warn)               #  <-- Hard work done here.
+            calibrateTriangle(m1, M1[::-1,::-1].T, 'down', method, warn=warn)  #  <-- Hard work done here.
+            m1.flip(True)
+            if (clem.N%2): m1.phi_out[-1] = np.angle(M1[-1,-1])
+            else: m2.phi_out[0] = np.angle(M2[0,0])
 
-        if (clem.N%2): m1.phi_out[-1] = np.angle(M1[-1,-1])
-        else: m2.phi_out[0] = np.angle(M2[0,0])
         m2.phi_out += m1.phi_out; m1.phi_out = 0
         self.p_phase = np.concatenate([m1.p_phase, m2.p_phase])
         (m1.p_phase, m2.p_phase) = np.split(self.p_phase, [len(m1.p_phase)])
         self.m1 = m1
         self.m2 = m2
         self.X = X
+
+        if (method == 'new'):
+            calibrateClements(self, M)       #  <-- Hard work done here.
 
     def clements(self, phi_pos='out') -> ClementsNetwork:
         r"""
@@ -285,3 +298,89 @@ class SymClementsNetwork(MeshNetwork):
         return self.m2.dot(self.m1.dot(v, p1, s1), p2, s2)
 
     # TODO -- implement grad_phi
+
+
+# Iterative (theta, phi) optimization to find solve: <a|T(theta, phi)|b> = c.  JITted to speed up the for loop.
+@njit
+def Tsolve_abc(p_splitter, a, b, c, n):
+    (Cp, C) = np.cos(p_splitter + np.pi/4); (Sp, S) = np.sin(p_splitter + np.pi/4)
+    (a1, a2) = (a[0]*C + 1j*a[1]*S, 1j*a[0]*S + a[1]*C); (b1, b2) = (b[0], b[1]); (theta, phi) = (np.pi/2, 0.)
+    for i in range(n):
+        a1p = a1 * np.exp(1j*theta); (u1, u2) = (a1p*Cp + 1j*a2*Sp, 1j*a1p*Sp + a2*Cp)
+        phi = np.angle(c - b2*u2) - np.angle(b1*u1)
+        #print (np.abs(c - b1*u1*np.exp(1j*phi) - b2*u2))
+        b1p = b1 * np.exp(1j*phi); (u1, u2) = (b1p*Cp + 1j*b2*Sp, 1j*b1p*Sp + b2*Cp)
+        theta = np.angle(c - u2*a2) - np.angle(u1*a1)
+        #print (np.abs(c - u1*a1*np.exp(1j*theta) - u2*a2))
+    return np.array([theta/2, phi])
+@njit
+def Tsolve_abc_out(p_splitter, a, b, c, n):
+    (Cp, C) = np.cos(p_splitter + np.pi/4); (Sp, S) = np.sin(p_splitter + np.pi/4)
+    (a1, a2) = (a[0], a[1]); (b1, b2) = (b[0]*Cp + 1j*b[1]*Sp, 1j*b[0]*Sp + b[1]*Cp); (theta, phi) = (np.pi/2, 0.)
+    for i in range(n):
+        b1p = b1 * np.exp(1j*theta); (u1, u2) = (b1p*C + 1j*b2*S, 1j*b1p*S + b2*C)
+        phi = np.angle(c - u1*a1) - np.angle(u2*a2)
+        #print (np.abs(c - u2*a2*np.exp(1j*phi) - u1*a1))
+        a2p = a2 * np.exp(1j*phi); (u1, u2) = (a1*C + 1j*a2p*S, 1j*a1*S + a2p*C)
+        theta = np.angle(c - b2*u2) - np.angle(b1*u1)
+        #print (np.abs(c - b1*u1*np.exp(1j*theta) - b2*u2))
+    return np.array([theta/2, phi])
+# Numba-accelerated functions for T(theta, phi).
+@njit
+def T_mzi(p, s):
+    (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta])
+    (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
+    return np.exp(1j*theta) * np.array([[f * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
+                                        [f * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
+@njit
+def T_mzi_o(p, s):
+    (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta])
+    (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
+    return np.exp(1j*theta) * np.array([[    (1j*S*Cm - C*Sp),       ( 1j*C*Cp - S*Sm)],
+                                        [f * (1j*C*Cp + S*Sm),   f * (-1j*S*Cm - C*Sp)]])
+
+def calibrateClements(clem: SymClementsNetwork, U: np.ndarray):
+    r"""
+    Calibrates the Clements mesh according to my new method that does not require a diagonal of internal detectors.
+    Accelerated by Numba JIT.
+    :param clem: Clements mesh (parameters will be overwritten).
+    :param U: Target matrix.
+    :return:
+    """
+    assert isinstance(clem.X, MZICrossing)
+    N = clem.N; U = np.array(U, dtype=np.complex); (m1, m2) = (clem.m1, clem.m2)
+    assert (U.shape == (N, N))
+    # (V0)* V and W (W0)*, where V0 is ideal, V is with real components.  Goal: match U = V*W
+    VdV = np.eye(N, dtype=np.complex); WWd = np.eye(N, dtype=np.complex)
+    for m in [m1, m2]: m.p_crossing[:, 0] = 0; m.p_crossing[:, 1] = 2*np.pi*np.random.rand(m.n_cr)
+    Z = clem.matrix()
+    p1 = m1.p_splitter * np.ones([m1.n_cr, m1.X.n_splitter]); p2 = m2.p_splitter * np.ones([m2.n_cr, m2.X.n_splitter])
+    (ind1, ind2) = (np.array(m1.inds), np.array(m2.inds))
+    (c1, c2) = (m1.p_crossing, m2.p_crossing)
+    calibrateClementsHelper(N, U, Z, VdV, WWd, ind1, ind2, p1, p2, c1, c2, m2.L)
+    clem.phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
+
+# Super-fast Numba JIT-accelerated Clements calibration code.  Runs 10-20x faster than pure Python version.
+@njit
+def calibrateClementsHelper(N, U, Z, VdV, WWd, ind1, ind2, p1, p2, c1, c2, m2_L):
+    for i in range(N-1):
+        for j in range(i+1):
+            if (i%2 == 0):
+                (m, n) = (N-1-j, i-j); ind = ind1[j]+(i-j)//2; (u, v) = U[m, n:n+2]
+                T0dag = np.array([[v,u.conjugate()], [-u,v.conjugate()]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
+                for M in [U, WWd]: M[:, n:n+2] = M[:, n:n+2].dot(T0dag)
+                Z[:, n:n+2] = Z[:, n:n+2].dot(T_mzi(c1[ind], p1[ind]).conj().T)
+                wn = WWd[:, n]; vm = VdV[m, :].dot(Z); res = wn.dot(vm) - wn[n:n+2].dot(vm[n:n+2])
+                c1[ind] = Tsolve_abc(p1[ind], vm[n:n+2], wn[n:n+2], -res, 10)
+                T = T_mzi(c1[ind], p1[ind])
+                WWd[n:n+2, :] = T.dot(WWd[n:n+2, :])
+            else:
+                (m, n) = (N-2-i+j, j); ind = ind2[m2_L-j]-1-(i-j)//2; (u, v) = U[m:m+2, n]
+                T0dag = np.array([[u.conjugate(),v.conjugate()], [v,-u]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
+                for M in [U, VdV]: M[m:m+2, :] = T0dag.dot(M[m:m+2, :])
+                Z[m:m+2, :] = T_mzi_o(c2[ind], p2[ind]).conj().T.dot(Z[m:m+2, :])
+                wn = Z.dot(WWd[:, n]); vm = VdV[m+1, :]; res = wn.dot(vm) - wn[m:m+2].dot(vm[m:m+2])
+                c2[ind] = Tsolve_abc_out(p2[ind], vm[m:m+2], wn[m:m+2], -res, 10)
+                T = T_mzi_o(c2[ind], p2[ind])
+                VdV[:, m:m+2] = VdV[:, m:m+2].dot(T)
+            #print ((i, j), ':', (m, n), ind, ' *'[err_i])

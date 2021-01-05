@@ -13,6 +13,7 @@
 #   12/10/20: Added Ratio Method strategy for calibrating SquareNet and Reck.
 #   12/15/20: Extended Ratio Method to triangular and Clements meshes.
 #   12/19/20: Added MZICrossingSym and Direct Method for tuning triangular and Clements meshes.
+#   01/05/21: Added new Clements tuning method.
 
 from .crossing import Crossing, MZICrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork

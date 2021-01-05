@@ -82,7 +82,7 @@ class MeshNetwork:
         J = [0]
         def f(U):
             V = U - U_target; J[0] = np.linalg.norm(V)**2; return V
-        grad = 2*np.real(self.grad_phi(np.eye(self.M), f, p_phase, p_splitter))
+        grad = 2*np.real(self.grad_phi(np.eye(self.M), f, p_phase, p_splitter)[0])
         return (J[0], grad)
 
 
@@ -307,7 +307,7 @@ def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
     if (diag == 'up') and (mesh.phi_pos == 'out'):
         mesh.flip(True); calibrateTriangle(mesh, U, 'down', method, warn); mesh.flip(True); return
     assert (diag == 'down') and (mesh.phi_pos == 'in')
-    X = {'direct': mesh.X.flip(), 'ratio': mesh.X}[method]
+    X = {'direct': mesh.X.flip(), 'mod': mesh.X.flip(), 'ratio': mesh.X}[method]
     N = len(U); Upost = np.eye(N, dtype=np.complex); assert U.shape == (N, N)
 
     # Divide mesh into diagonals.  Make sure each diagonal can be uniquely targeted with a certain input waveguide.
@@ -322,32 +322,42 @@ def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
     phi_out = 0*mesh.phi_out
 
     err = 0
-    if method == 'direct':
+    if method in ['direct', 'mod']:
         p = np.array([[2*j+j0, i+(2*j+j0)] for (i, j0) in enumerate(mesh.shifts) for j in range(mesh.lens[i])])
         p = p[np.lexsort(p.T)]; outfield = dict(p[np.where(np.roll(p[:, 1], 1) != p[:, 1])[0]][:, ::-1])  # out-fields
         X = mesh.X.flip(); assert ('T11' in X.tunable_indices);
         env = np.maximum.accumulate((np.array(mesh.shifts) + np.array(mesh.lens)*2 - 2)[::-1])[::-1]
+        Psum = np.cumsum(np.abs(U[::-1]**2), axis=0)[::-1]  # Psum[i, j] = norm(U[i:, j])^2
         for pos_i in pos:
-            E_in = 1.0; Tlist = []; ptr_last = None; l = pos_i[-1, 2]; v = np.zeros([N], dtype=np.complex)
+            E_in = 1.0; Tlist = []; ptr_last = None; l = pos_i[-1, 2]; #v = np.zeros([N], dtype=np.complex)
+            w = np.zeros([N], dtype=np.complex)
             for (m, (i, j, ind, _)) in enumerate(pos_i[::-1]):  # Adjust MZIs *down* the diagonal one by one.
                 ptr = mesh.inds[i] + j
                 k = outfield[i+ind] if (i+ind in outfield) else ind  # Output index (or two) k:k+dk
                 dk = (min(2, outfield[i+ind+2]-k) if (i+ind+2 in outfield) else 2) if (i < mesh.L-1) else 1
-                T11 = (U[k:k+dk, l] - Upost[k:k+dk, :].dot(v)).sum()/(E_in*Upost[k:k+dk, ind]).sum()
+                # T11 = (U[k:k+dk, l] - Upost[k:k+dk, :].dot(v)).sum()/(E_in*Upost[k:k+dk, ind]).sum()
+                U_kl = np.array(U[k:k+dk, l])
+                if (method == 'mod'):
+                    U_kl *= np.sqrt((np.linalg.norm(w[k:])**2 + np.abs(E_in)**2) / Psum[k, l])
+                T11 = (U_kl - w[k:k+dk]).sum()/(E_in*Upost[k:k+dk, ind]).sum()
                 ((theta, phi), d_err) = X.Tsolve(T11, 'T11', p_splitter[ptr]); err += d_err
                 mesh.p_crossing[ptr, 0] = theta
                 if m: mesh.p_crossing[ptr_last, 1] = phi  # Set theta for crossing & phi to *upper-left* of crossing.
                 else: phi_out[ind] = phi
                 T = X.T((theta, phi), p_splitter[ptr]); Tlist.append(T)
-                v[ind] += E_in * T[0, 0]; E_in *= T[1, 0]
+                # v[ind] += E_in * T[0, 0];
+                w += E_in * T[0, 0] * Upost[:, ind]
+                E_in *= T[1, 0]
                 phi_out[ind+1] = np.angle(U[k, ind+1]/(Upost[k, ind]*T[0, 1]))
                 ptr_last = ptr
             k = (ind+1) if (i == mesh.L-1 or ind > env[i+1]) else outfield[i+ind+2]
             dk = (min(2, outfield[i+ind+4]-k) if (i+ind+4 in outfield) else 2) if (i < mesh.L-1) else 1
             # Set final phase shift.
-            T11 = (U[k:k+dk,l] - Upost[k:k+dk,:].dot(v))/(E_in * Upost[k,ind+1])
-            mesh.p_crossing[ptr, 1] = phi = np.angle((U[k:k+dk,l] - Upost[k:k+dk,:].dot(v)).sum()/
-                                                     (E_in * Upost[k:k+dk,ind+1]).sum())
+            # T11 = (U[k:k+dk,l] - Upost[k:k+dk,:].dot(v))/(E_in * Upost[k,ind+1])
+            # mesh.p_crossing[ptr, 1] = phi = np.angle((U[k:k+dk,l] - Upost[k:k+dk,:].dot(v)).sum()/
+            #                                          (E_in * Upost[k:k+dk,ind+1]).sum())
+            T11 = (U[k:k+dk,l] - w[k:k+dk])/(E_in * Upost[k,ind+1])
+            mesh.p_crossing[ptr,1] = phi = np.angle((U[k:k+dk,l] - w[k:k+dk]).sum()/ (E_in * Upost[k:k+dk,ind+1]).sum())
             Upost[:, ind+1] *= np.exp(1j*phi)
             for (ind, T) in zip(pos_i[:, 2], Tlist[::-1]):
                 Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)   # Multiply Upost by diagonal's T.
