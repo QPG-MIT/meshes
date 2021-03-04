@@ -121,7 +121,8 @@ def diag(m1: StructuredMeshNetwork, m2: StructuredMeshNetwork, phi_diag: np.ndar
     diagHelper(U, Z, VdV, WWd, *p, *c, np.array([i, j, ind, r]).T)
     phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
 
-# Super-fast Numba JIT-accelerated Clements calibration code.  Runs 10-20x faster than pure Python version.
+# Super-fast Numba JIT-accelerated self-configuration code that implements the matrix diagonalization method.
+# Runs 10-20x faster than pure Python version.
 @njit
 def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp):
     #X = np.array(U)

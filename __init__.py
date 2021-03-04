@@ -14,6 +14,7 @@
 #   12/15/20: Extended Ratio Method to triangular and Clements meshes.
 #   12/19/20: Added MZICrossingSym and Direct Method for tuning triangular and Clements meshes.
 #   01/05/21: Added new Clements tuning method.
+#   03/03/21: Extended "new" (matrix diagonalization) method to Reck and general mesh shapes.
 
 from .crossing import Crossing, MZICrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
