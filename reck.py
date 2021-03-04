@@ -13,6 +13,7 @@ import warnings
 from typing import Any
 from .mesh import StructuredMeshNetwork, calibrateTriangle
 from .crossing import Crossing, MZICrossing
+from .diag import diagReck
 
 class ReckNetwork(StructuredMeshNetwork):
     def __init__(self,
@@ -54,6 +55,11 @@ class ReckNetwork(StructuredMeshNetwork):
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
                                               p_crossing=p_crossing, phi_out=phi_out, X=X)
             if phi_pos == 'in': self.flip_crossings(inplace=True)
+        elif (method == 'diag'):
+            super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
+                  p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N),
+                  X=X.flip() if (phi_pos == 'in') else X, phi_pos=phi_pos)
+            diagReck(self, M)
         else:
             assert phi_pos == 'in'
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,

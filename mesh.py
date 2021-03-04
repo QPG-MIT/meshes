@@ -380,3 +380,9 @@ def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
     if (warn and err):
         warnings.warn(
             "Mesh calibration: {:d}/{:d} matrix values could not be set.".format(err, len(mesh.p_crossing)))
+
+
+
+class IdentityNetwork(StructuredMeshNetwork):
+    def __init__(self, N: int, X: Crossing=MZICrossing(), phi_pos='out'):
+        super(IdentityNetwork, self).__init__(N, [], [], 0., 0., X=X, phi_pos=phi_pos)
