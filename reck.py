@@ -7,13 +7,14 @@
 #   06/18/20: Defined class ReckNetwork (part of module meshes.py)
 #   07/09/20: Moved to this file.
 #   07/10/20: Added compatibility with custom crossings in crossing.py
+#   03/06/21: Added compatibility with diagonalization method, JIT-ed routine for direct method.
 
 import numpy as np
 import warnings
 from typing import Any
 from .mesh import StructuredMeshNetwork, calibrateTriangle
 from .crossing import Crossing, MZICrossing
-from .diag import diagReck
+from .configure import diag, direct
 
 class ReckNetwork(StructuredMeshNetwork):
     def __init__(self,
@@ -23,7 +24,7 @@ class ReckNetwork(StructuredMeshNetwork):
                  X: Crossing=MZICrossing(),
                  M: np.ndarray=None,
                  N: int=None,
-                 method: str=None,
+                 method: str='diag',
                  warn=False,
                  phi_pos='out'):
         r"""
@@ -36,6 +37,7 @@ class ReckNetwork(StructuredMeshNetwork):
         :param method: Method used to program the Reck mesh in presence of errors: 'direct' or 'ratio'.
         :param phi_pos: Position of phase shifts: 'in' or 'out'.
         """
+        assert (M is None) ^ (N is None)
         if (M is not None): N = len(M)  # Start by getting N, shifts, lens, p_splitter
         elif (np.iterable(phi_out)): N = len(phi_out)
         else: assert N != None
@@ -60,15 +62,17 @@ class ReckNetwork(StructuredMeshNetwork):
                   p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N),
                   X=X.flip() if (phi_pos == 'in') else X, phi_pos=phi_pos)
             diagReck(self, M)
+        elif (method == 'direct'):
+            assert (phi_pos == 'in')
+            super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
+                  p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N),
+                  X=X.flip() if (phi_pos == 'in') else X, phi_pos=phi_pos)
+            direct(self, M, 'down')
         else:
             assert phi_pos == 'in'
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
                   p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N), X=X.flip(), phi_pos='in')
             calibrateTriangle(self, M, 'down', method, warn)
-
-
-
-
 
 
 
@@ -136,3 +140,20 @@ def reorder_reck(N: int, data: np.ndarray, reverse=False) -> np.ndarray:
             else:       out[ind_out] = data[ind_in ]
             ind_in += 1
     return out
+
+def diagReck(m: ReckNetwork, U: np.ndarray):
+    r"""
+    Self-configures a Reck mesh according to the diagonalization method.
+    :param m: Instance of ReckNetwork.
+    :param U: Target matrix.
+    :return:
+    """
+    N = m.N; out = (m.phi_pos == 'out')
+    def nn_rk(m): return N-1-m
+    if out:
+        def ijxyp_rk(m, n): return [m, N-1-n, m*2+n, N-2-n, m*0 + 1 - out]
+        diag(m, None, m.phi_out, U, N-1, nn_rk, ijxyp_rk)
+    else:
+        def ijxyp_rk(m, n): return [N-1-n, m, -m*2-n, N-2-n, m*0 + 1 - out]
+        diag(None, m, m.phi_out, U, N-1, nn_rk, ijxyp_rk)
+

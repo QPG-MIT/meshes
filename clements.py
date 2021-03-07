@@ -18,7 +18,7 @@ from numba import njit
 from typing import Any, Tuple
 from .mesh import MeshNetwork, StructuredMeshNetwork, calibrateTriangle
 from .crossing import Crossing, MZICrossing
-from .diag import diagClements
+from .configure import diag
 
 class ClementsNetwork(StructuredMeshNetwork):
     def __init__(self,
@@ -300,3 +300,18 @@ class SymClementsNetwork(MeshNetwork):
         return self.m2.dot(self.m1.dot(v, p1, s1), p2, s2)
 
     # TODO -- implement grad_phi
+
+def diagClements(m, U: np.ndarray):
+    r"""
+    Self-configures a Clements mesh according to the diagonalization method.
+    :param m: Instance of SymClementsNetwork.
+    :param U: Target matrix.
+    :return:
+    """
+    N = m.N
+    def nn_cl(m):
+        return m+1
+    def ijxyp_cl(m, n):
+        return [N-1-m+n, n, -n, N-2-m+n, m*0+1] if (m[0]%2) else [N-1-n, m-n, n, m-n, m*0]
+    diag(m.m1, m.m2, m.phi_diag, U, N-1, nn_cl, ijxyp_cl)
+

@@ -1,5 +1,5 @@
 # Meshes package.
-# Ryan Hamerly, 12/10/20
+# Ryan Hamerly, 03/06/21
 #
 # Implements the MeshNetwork class, which can be used for describing Reck and Clements meshes (or any other
 # beamsplitter mesh where couplings occur between neighboring waveguides).  Clements decomposition is also
@@ -15,12 +15,14 @@
 #   12/19/20: Added MZICrossingSym and Direct Method for tuning triangular and Clements meshes.
 #   01/05/21: Added new Clements tuning method.
 #   03/03/21: Extended "new" (matrix diagonalization) method to Reck and general mesh shapes.
+#   03/06/21: Revamped SquareNet.  Added the triangular QR mesh.
 
 from .crossing import Crossing, MZICrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
-from .reck import ReckNetwork, reckdec
-from .clements import ClementsNetwork, SymClementsNetwork, clemdec
-from .square import SquareNetwork, SquareNetworkMZI, calibrateDiag, squaredec, squaremat
+from .reck import ReckNetwork
+from .clements import ClementsNetwork, SymClementsNetwork
+from .square import SquareNetwork
+from .qr import QRNetwork
 
 import scipy.stats
 

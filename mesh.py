@@ -16,7 +16,7 @@
 import autograd.numpy as npa
 import numpy as np
 import warnings
-from typing import List, Any
+from typing import List, Any, Tuple
 from .crossing import Crossing, MZICrossing, MZICrossingOutPhase
 
 
@@ -44,6 +44,13 @@ class MeshNetwork:
         Output dimension of the mesh network.  Thus, self.matrix().shape == (self.M, self.N)
         """
         raise NotImplementedError()
+    @property
+    def shape(self) -> Tuple[int, int]:
+        r"""
+        Dimension of the mesh network, same as self.matrix().shape
+        :return:
+        """
+        return (self.M, self.N)
     def dot(self, v, p_phase=None, p_splitter=None) -> np.ndarray:
         r"""
         Computes the dot product between the splitter and a vector v.
@@ -262,8 +269,8 @@ class StructuredMeshNetwork(MeshNetwork):
         assert isinstance(self.X, MZICrossing) or isinstance(self.X, MZICrossingOutPhase)
         self.X = self.X.flip()
         self.phi_pos = {'in': 'out', 'out': 'in'}[self.phi_pos]
-        self.p_splitter[:] = (self.p_splitter + np.zeros([self.n_cr, 2]))[:, ::-1] + np.pi/2*np.array([[1, -1]])
-        self.p_splitter[:] = self.p_splitter[::-1]
+        self.p_splitter = (self.p_splitter + np.zeros([self.n_cr, 2]))[:, ::-1] + np.pi/2*np.array([[1, -1]])
+        self.p_splitter = self.p_splitter[::-1]
         self.p_crossing = self.p_crossing[::-1]
         self.phi_out = self.phi_out[::-1]
         self.lens = self.lens[::-1]; self.shifts = (self.N-2*np.array(self.lens)-self.shifts[::-1]).tolist()

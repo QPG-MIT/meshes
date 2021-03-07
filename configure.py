@@ -1,15 +1,16 @@
-# meshes/diag.py
+# meshes/configure.py
 # Ryan Hamerly, 3/3/21
 #
-# Implements the matrix diagonalization method for self-calibrating MZI meshes.
+# Self-configuration routines for programming MZI meshes.  Currently implements the direct and diagonalization methods.
 #
 # History
 #   01/05/21: Method invented (part of meshes/clements.py)
 #   03/03/21: Extended to general meshes, including Reck.  Moved to this file.
+#   03/06/21: JIT-ed my direct method code and added it here.
 
 import numpy as np
 from numba import njit
-from typing import Callable
+from typing import Callable, Union
 from .mesh import MeshNetwork, StructuredMeshNetwork, IdentityNetwork
 from .crossing import MZICrossing, MZICrossingOutPhase
 
@@ -52,40 +53,23 @@ def T_mzi_o(p, s):
     return np.exp(1j*theta) * np.array([[    (1j*S*Cm - C*Sp),       ( 1j*C*Cp - S*Sm)],
                                         [f * (1j*C*Cp + S*Sm),   f * (-1j*S*Cm - C*Sp)]])
 
-def diagClements(m, U: np.ndarray):
-    r"""
-    Self-configures a Clements mesh according to the diagonalization method.
-    :param m: Instance of SymClementsNetwork.
-    :param U: Target matrix.
-    :return:
-    """
-    N = m.N
-    def nn_cl(m):
-        return m+1
-    def ijxyp_cl(m, n):
-        return [N-1-m+n, n, -n, N-2-m+n, m*0+1] if (m[0]%2) else [N-1-n, m-n, n, m-n, m*0]
-    diag(m.m1, m.m2, m.phi_diag, U, N-1, nn_cl, ijxyp_cl)
+@njit
+def Tsolve_11(T, p_splitter):
+    (alpha, beta) = p_splitter
+    Cp = np.cos(alpha+beta); Cm = np.cos(alpha-beta); Sp = np.sin(alpha+beta); Sm = np.sin(alpha-beta)
+    # Input target T = T[0, 0]
+    S2 = (np.abs(T)**2 - Sp**2) / (Cm**2 - Sp**2)
+    theta = np.arcsin(np.sqrt(min(max(S2, 0.), 1.)))
+    if (np.isnan(theta)): theta = 0.
+    phi = np.angle(T) - np.angle(1j*Cm*np.sin(theta) - np.cos(theta)*Sp) - theta
+    return np.array([theta, phi])
 
-def diagReck(m, U: np.ndarray):
-    r"""
-    Self-configures a Reck mesh according to the diagonalization method.
-    :param m: Instance of ReckNetwork.
-    :param U: Target matrix.
-    :return:
-    """
-    N = m.N; out = (m.phi_pos == 'out')
-    def nn_rk(m): return N-1-m
-    if out:
-        def ijxyp_rk(m, n): return [m, N-1-n, m*2+n, N-2-n, m*0 + 1 - out]
-        diag(m, None, m.phi_out, U, N-1, nn_rk, ijxyp_rk)
-    else:
-        def ijxyp_rk(m, n): return [N-1-n, m, -m*2-n, N-2-n, m*0 + 1 - out]
-        diag(None, m, m.phi_out, U, N-1, nn_rk, ijxyp_rk)
 
-def diag(m1: StructuredMeshNetwork, m2: StructuredMeshNetwork, phi_diag: np.ndarray, U: np.ndarray,
-                  nm: int, nn: Callable, ijxyp: Callable):
+
+def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork, None],
+         phi_diag: np.ndarray, U: np.ndarray, nm: int, nn: Callable, ijxyp: Callable):
     r"""
-    Calibrates a beamsplitter the Clements mesh to the diagonalization method, detailed in my note.
+    Calibrates a beamsplitter mesh using the diagonalization method, detailed in my note.
     Accelerated by Numba JIT.
     :param m1: Left MZI mesh
     :param m2: Right MZI mesh
@@ -155,3 +139,71 @@ def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp):
             #X[i1:i1+2, :] = T.conj().T.dot(X[i1:i1+2, :])
         #print ((i, j), ':', ind, p)#, ' *'[err_i])
         #print ((np.abs(X) > 1e-6).astype(int))
+
+
+
+def direct(m: StructuredMeshNetwork, U: np.ndarray, diag: str, dk_max=1):
+    r"""
+    Calibrates a beamsplitter mesh to the direct method, detailed in my note.  Accelerated by Numba JIT.
+    :param m: Mesh to configure.
+    :param U: Target matrix.
+    :param diag: Direction of diagonals ['up' or 'down']
+    :param dk_max: Normally 1.  Use dk_max=2 for some divided Clements rectangles (see note).
+    :return:
+    """
+    if (diag == 'up') and (m.phi_pos == 'out'): m.flip(True); direct(m, U, 'down'); m.flip(True); return
+    assert (diag == 'down') and (m.phi_pos == 'in')
+    assert isinstance(m.X, MZICrossingOutPhase)
+    N = len(U); Upost = np.eye(N, dtype=np.complex); assert U.shape == (N, N)
+
+    # Divide mesh into diagonals.  Make sure each diagonal can be uniquely targeted with a certain input waveguide.
+    pos = np.concatenate([[[i, j, 2*j+j0, i-(2*j+j0)] for j in range(m.lens[i])] for (i, j0) in enumerate(m.shifts)])
+    pos = pos[np.lexsort(pos[:, ::3].T)][::-1]; pos = np.split(pos, np.where(np.roll(pos[:,3], 1) != pos[:,3])[0])[1:]
+    assert (np.diff(np.concatenate([pos_i[-1:] for pos_i in pos])[:, 2]) > 0).all()  # Diagonals have distinct inputs.
+    p_splitter = m.p_splitter * np.ones([m.n_cr, 2])
+    phi_out = 0*m.phi_out
+
+    # Prepare data for the JIT-accelerated helper function, below.
+    p = np.array([[2*j+j0, i+(2*j+j0)] for (i, j0) in enumerate(m.shifts) for j in range(m.lens[i])])
+    p = p[np.lexsort(p.T)]; fld = dict(p[np.where(np.roll(p[:, 1], 1) != p[:, 1])[0]][:, ::-1])  # out-fields
+    (k, v) = np.array(list(fld.items())).T; of = np.repeat(0, max(2*k)+5); is_of = of*0; of[k] = v; is_of[k] = 1
+    env = np.maximum.accumulate((np.array(m.shifts) + np.array(m.lens)*2 - 2)[::-1])[::-1]
+    Psum = np.cumsum(np.abs(U[::-1]**2), axis=0)[::-1]  # Psum[i, j] = norm(U[i:, j])^2
+    Tlist = np.zeros([N+5, 2, 2], dtype=np.complex); w = np.zeros([N], dtype=np.complex)
+
+    # Numba JIT-accelerated helper function.
+    directHelper(np.concatenate(pos), np.array([len(p) for p in pos]), np.array(m.inds), p_splitter, m.p_crossing,
+                 phi_out, of, is_of, env, m.L, U, Upost, Tlist, w, dk_max)
+
+    m.phi_out[:] = phi_out
+
+# Numba JIT helper function for the direct method.
+@njit
+def directHelper(pos, lpos, inds, p_splitter, p_crossing, phi_out, outfield, is_of, env, L, U, Upost, Tlist, w, dkmax):
+    ipos = np.roll(np.cumsum(lpos), 1); ipos[0] = 0
+    for (ip, lp) in zip(ipos, lpos):
+        pos_i = pos[ip:ip+lp]
+        N = len(U); E_in = 1.0; ptr_last = 0; l = pos_i[-1, 2]; w[:] = 0
+        (i, ind, ptr) = (0, 0, 0)
+        for (m, (i, j, ind, _)) in enumerate(pos_i[::-1]):  # Adjust MZIs *down* the diagonal one by one.
+            ptr = inds[i] + j
+            k = outfield[i+ind] if (is_of[i+ind]) else ind  # Output index (or two) k:k+dk
+            dk = (min(dkmax, outfield[i+ind+2]-k) if (is_of[i+ind+2]) else dkmax) if (i < L-1) else 1
+            U_kl = U[k:k+dk, l]
+            T11 = (U_kl - w[k:k+dk]).sum()/(E_in*Upost[k:k+dk, ind]).sum()
+            (theta, phi) = Tsolve_11(T11, p_splitter[ptr])
+            p_crossing[ptr, 0] = theta
+            if m: p_crossing[ptr_last, 1] = phi  # Set theta for crossing & phi to *upper-left* of crossing.
+            else: phi_out[ind] = phi
+            T = Tlist[m] = T_mzi(np.array([theta, phi]), p_splitter[ptr])
+            w += E_in * T[0, 0] * Upost[:, ind]
+            E_in *= T[1, 0]
+            phi_out[ind+1] = np.angle(U[k, ind+1]) - np.angle(Upost[k, ind]*T[0, 1])
+            ptr_last = ptr
+        k = (ind+1) if (i == L-1 or ind > env[i+1]) else outfield[i+ind+2]
+        dk = (min(dkmax, outfield[i+ind+4]-k) if (is_of[i+ind+4]) else dkmax) if (i < L-1) else 1
+        # Set final phase shift.
+        p_crossing[ptr,1] = phi = (np.angle((U[k:k+dk,l]-w[k:k+dk]).sum()) - np.angle((E_in*Upost[k:k+dk,ind+1]).sum()))
+        Upost[:, ind+1] *= np.exp(1j*phi)
+        for (ind, T) in zip(pos_i[:, 2], Tlist[len(pos_i)-1::-1]):
+            Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)   # Multiply Upost by diagonal's T.

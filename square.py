@@ -6,280 +6,152 @@
 # History
 #   11/16/19: Conceived SquareNet, wrote decomposition code (Note3/main.py)
 #   07/09/20: Moved to this file.  Created classes SquareNetwork, SquareNetworkMZI.
-#   12/10/20: Added Ratio Method tuning strategy  for SquareNet and the associated Reck.
+#   12/10/20: Added Ratio Method tuning strategy for SquareNet and the associated Reck.
+#   03/06/21: Harmonized notation with other modules.  Support for fast JIT-ed direct and diagonalization routines.
 
 import numpy as np
-import warnings
-from typing import Any
+from scipy.linalg import eigvalsh
+from numpy.linalg import cholesky
+from typing import Any, Tuple
 from .crossing import Crossing, MZICrossing
-from .mesh import MeshNetwork
-
-def calibrateDiag(Acol, Tpost, p_splitter: Any=0., X: Crossing=MZICrossing(), errout=False):
-    r"""
-    Gets p_phase for the next (falling) diagonal of SquareNet.  Does so by sending a signal 1 into the input and
-    going down the diagonal, one MZI at a time, to match the complex amplitude of each output field.
-    :param Acol: Desired column of the output matrix A.
-    :param Tpost: Transfer matrix from all subsequent columns
-    :param p_splitter: Splitter errors or other manufacturing imperfections.
-    :param X: Crossing class.
-    :param errout: Whether to output the error state.
-    :return: (p_phase, err) if errout else (p_phase)
-    """
-    N = len(Acol); assert (Acol.shape == (N,) and Tpost.shape == (N,N))
-    p_splitter = np.ones([N, X.n_splitter]) * p_splitter
-    p_phase = np.zeros([N, X.n_phase], dtype=np.float)
-    # x_LO: LO input.  y_LO: output from LO.  y_V: output due to fields v[1:k-1]
-    # u_k, w_k: intermediate input / output of k'th cell.  See CodeFig1.
-    y_V = np.zeros(N, dtype=np.complex); u_k = 1.; err = 0
-    # Loop over all elements in the diagonal.
-    for k in range(N):
-        # The output is: y[k] = yk_avg + r * yk_diff.  Depends on value of (complex) reflection r
-        yk_avg = y_V[k]
-        yk_diff = Tpost[k, k] * u_k
-        # Get z = i*sin(theta)*e^{i(phi+theta)}, then get (theta, phi).
-        if (yk_diff == 0):
-            (theta, phi) = (0, 0); err += 1
-        else:
-            z = (Acol[k] - yk_avg) / yk_diff
-            (p_phase[k], d_err) = X.Tsolve(z, 0, p_splitter[k]); err += d_err
-        # Update u_k, y_V for the next element.  Save (theta, phi).
-        T = X.T(p_phase[k], p_splitter[k])
-        y_V += Tpost[:, k] * T[0, 0] * u_k
-        u_k *= T[1, 0]
-    return (p_phase, err) if errout else (p_phase)
-
-# Calibrates the phases needed to realize SquareNet.
-def squaredec(mat, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
-    r"""
-    Performs the SquareNet decomposition.
-    :param mat: Input-output matrix.  Can be rectangular or complex-valued.  SquareNet can only realize matrices with
-    |A| ≤ 1.
-    :param p_splitter: Splitter errors or other manufacturing imperfections.
-    :param X: Crossing class.
-    :param warn: Issues warnings if the matrix could not be perfectly realized.
-    :return: p_phase, an array with size=(M, N, X.n_phase)
-    """
-    (N, M) = mat.shape; Tv = np.eye(N, N+1, dtype=np.complex)
-    p_splitter = p_splitter * np.ones([M, N, X.n_splitter])
-    p_phase = np.zeros([M, N, X.n_phase], dtype=np.float)
-    theta = np.zeros([M, N], dtype=np.float); phi = np.zeros([M, N], dtype=np.float)
-    # Loop over diagonals top to bottom.  Calibrate each diagonal, then right-multiply T_k
-    # to get the output transfer matrix (same method as in T_square).
-    err = 0
-    for i in range(M):
-        (p_phase[i], err_i) = calibrateDiag(mat[:, i], Tv[:, :N], p_splitter[i], X, True)
-        err += err_i
-        X.rmult_falling(Tv, p_phase[i], p_splitter[i])
-        Tv[:, :N] = Tv[:, 1:]
-        Tv[:, N] = 0
-    if (warn and err):
-        warnings.warn(
-            "SquareNet calibration: {:d}/{:d} matrix values could not be set.".format(err, M*N))
-    return p_phase
-
-# Gives the SquareNet transfer matrix A, where y[N] = A[N*M] x[M].
-# Inputs (theta, phi) are M*N arrays.  The rows are the diagonals, ordered from top to bottom.
-# If aux = True, returns (A, B), where y[N] = A[N*M] x[M] + B[N*N] x'[N]
-def squaremat(p_phase, p_splitter: Any=0., X: Crossing=MZICrossing(), aux=False):
-    (M, N) = p_phase.shape[:-1]
-    p_splitter = p_splitter * np.ones([M, N, X.n_splitter])
-    Tv = np.eye(N, N+1, dtype=np.complex)
-    A = np.zeros([N, M], dtype=np.complex)
-    # For each diagonal k, right-multiply [T_1...T_{k-1} | 0] * T_k = [A_k | T_1...T_k].
-    # Save first column to A, shift the columns over, and zero last column to get [T_1...T_k | 0]
-    for i in range(M):
-        X.rmult_falling(Tv, p_phase[i], p_splitter[i])
-        A[:, i] = Tv[:, 0]
-        Tv[:, :N] = Tv[:, 1:]
-        Tv[:, N] = 0
-    if (aux):
-        return (A, np.array(Tv[:, :N]))
-    else:
-        return A
+from .mesh import MeshNetwork, StructuredMeshNetwork
+from .configure import diag, direct
 
 class SquareNetwork(MeshNetwork):
+    full: StructuredMeshNetwork
+    phi_pos: str
     _M: int
     _N: int
-    _X: Crossing
+    _out: bool
+    X: Crossing
+
+    def __init__(self,
+                 p_crossing: Any=0.,
+                 phi_out: Any=0.,
+                 p_splitter: Any=0.,
+                 X: Crossing=MZICrossing(),
+                 M: np.ndarray=None,
+                 eig: float=None,
+                 N: int=None,
+                 shape: Tuple[int, int]=None,
+                 method: str='diag',
+                 phi_pos='out'):
+        r"""
+        Mesh network based on the SquareNet (diamond) geometry.
+        :param N: Number of inputs / outputs.
+        :param p_crossing: Crossing parameters (theta, phi).  Scalar of vector of size (N^2, X.n_phase)
+        :param phi_out: External phase shifts.  Scalar or vector of size (2*N).
+        :param p_phase: Crossing and external phase parameters, size (N^2*X.n_phase + 2*N)
+        :param p_splitter: Beamsplitter imperfection parameters.  Scalar or size (N(N-1)/2, X.n_splitter).
+        :param M: A unitary matrix.  If specified, runs clemdec() to find the mesh realizing this unitary.
+        :param eig: If specified, normalizes M so that max_eigval(M*M) = eig.
+        :param N: Size.  Used for initializing a blank Reck mesh.
+        :param method: Method used to program the Reck mesh in presence of errors: 'direct' or 'ratio'.
+        :param phi_pos: Position of phase shifts: 'in' or 'out'.
+        """
+        assert (N is not None) + (M is not None) + (shape is not None) == 1
+        if (shape is None): shape = (N, N) if (N is not None) else M.shape
+        out = (phi_pos == 'out')
+        p_splitter = np.zeros((np.prod(shape), X.n_splitter)) + np.array(p_splitter)
+        p_crossing = np.zeros((np.prod(shape), X.n_phase   )) + np.array(p_crossing)
+        phi_out = np.concatenate([np.zeros((shape[1-out],)) + phi_out, np.zeros((shape[out],))])
+
+        shifts = np.abs(np.arange(-shape[1]+1, shape[0])); lens = (sum(shape) - shifts - shifts[::-1])//2
+
+        super(SquareNetwork, self).__init__()
+        self.full = StructuredMeshNetwork(sum(shape), list(lens), list(shifts), p_splitter=p_splitter,
+                                  p_crossing=p_crossing, phi_out=phi_out, X=X if out else X.flip(), phi_pos=phi_pos)
+        (self._M, self._N) = shape; self._out = out
+        self.p_phase = self.full.p_phase[:p_crossing.size+shape[1-out]]
+        self.p_splitter = self.full.p_splitter
+        self.phi_pos = phi_pos
+        self.X = self.full.X
+
+        if (M is not None):
+            if (method == 'diag'):
+                diagSquare(self, M, eig)
+            elif (method == 'direct'):
+                directSquare(self, M, eig)
+            else:
+                raise NotImplementedError(method)  # TODO -- program matrix.
 
     @property
-    def L(self):
-        return self._M + self._N - 1
+    def L(self) -> int:
+        return self.M + self.N - 1
     @property
-    def M(self):
+    def M(self) -> int:
         return self._M
     @property
-    def N(self):
+    def N(self) -> int:
         return self._N
     @property
-    def X(self):
-        r"""
-        Crossing class object.  Default: MZI crossing.
-        """
-        return self._X
+    def p_crossing(self) -> np.ndarray:
+        return self.full.p_crossing
+    @p_crossing.setter
+    def p_crossing(self, x):
+        self.p_crossing[:] = x
     @property
-    def n_phase(self):
-        r"""
-        Number of programmable degrees of freedom for crossing (default=2 for MZI).
-        """
-        return self.X.n_phase
-    @property
-    def n_splitter(self):
-        r"""
-        Number of splitter imperfection degrees of freedom for crossing (default=2 for MZI).
-        """
-        return self.X.n_splitter
+    def phi_out(self) -> np.ndarray:
+        return self.full.phi_out[:-self.N if self._out else -self.M]
+    @phi_out.setter
+    def phi_out(self, x):
+        self.phi_out[:] = x
 
-    def __init__(self, p_phase=0.0, p_splitter=0.0, X=MZICrossing(), M=None, method='direct'):
-        r"""
-        Mesh network based on SquareNet decomposition.  SquareNet can represent an arbitrary rectangular matrix up to a
-        scaling factor.  For an N*M matrix, the inputs are:
-        :param p_phase: Crossing degrees of freedom.  Scalar or size-(M, N, X.n_phase) tensor.
-        :param p_splitter: Crossing imperfections.  Scalar or size-(M, N, X.n_splitter) tensor.
-        :param M: The matrix to be represented.  Real or complex, size-(N, M).  If specified, runs squaredec() to find
-        the SquareNet decomposition, and any information in p_phase is overwritten.
-        :param method: Method used to find p_phase from M.  Options: 'direct', 'ratio'.
-        """
-        self._X = X; self.p_phase = np.array(p_phase); self.p_splitter = np.array(p_splitter)
-        (self._M, self._N) = M.shape if not (M is None) else self.p_phase.shape[:-1]
-        if not (M is None):
-            if method == 'direct':
-                self.p_phase = squaredec(M, self.p_splitter, self.X)  # <-- Where all the hard work is done
-            elif method == 'ratio':
-                self.p_phase = squaredec_ratio(M, self.p_splitter, self.X)  # <-- More hard work
-            else:
-                raise ValueError(method)
-        assert self.p_phase.shape in [(), (self.M, self.N, self.n_phase)]
-        assert self.p_splitter.shape in [(), (self.M, self.N, self.n_splitter)]
+    def _fullphase(self, p_phase):
+        if p_phase is None: return None
+        out = np.zeros([self.full.p_phase.shape]); out[:-self.shape[self._out]] = p_phase
+        return out
 
-    def matrix(self, p_phase=None, p_splitter=None, aux=False):
+    def dot(self, v, p_phase=None, p_splitter=None) -> np.ndarray:
         r"""
-        Computes the input-output matrix.  Equivalent to self.dot(np.eye(self.N))
-        Gives the SquareNet transfer matrix A, where y[N] = A[N*M] x[M].
-        Inputs (p_phase, p_splitter) are M*N*2 arrays.  The rows are the falling diagonals, ordered from top to bottom.
-        If aux = True, returns (A, B), where y[N] = A[N*M] x[M] + B[N*N] x'[N]
+        Computes the dot product between the splitter and a vector v.
+        :param v: Input vector / matrix.
         :param p_phase: Phase parameters.  Defaults to stored values.
         :param p_splitter: Splitter angle parameters (deviation from pi/4).  Defaults to stored values.
-        :param aux: Whether to return the auxiliary matrix B.
-        :return: (A, B) if aux=True else A
+        :return: Output vector / matrix.
         """
-        if p_phase is None: p_phase = self.p_phase
-        if p_splitter is None: p_splitter = self.p_splitter
-        return squaremat(p_phase, p_splitter, self.X, aux)
+        v = np.pad(v, [(0, self.M)]+[(0, 0)]*(v.ndim-1))
+        w = self.full.dot(v, p_phase=self._fullphase(p_phase), p_splitter=p_splitter)
+        return np.array(w[:self.M])
 
-class SquareNetworkMZI(SquareNetwork):
-    @property
-    def theta(self):
-        return self.p_phase[:, :, 0] if self.p_phase.ndim else self.p_phase
-    @property
-    def phi(self):
-        return self.p_phase[:, :, 1] if self.p_phase.ndim else self.p_phase
-
-    def __init__(self, p_phase=0.0, p_splitter=0.0, M=None):
-        r"""
-        SquareNet based on lossless MZI crossings.
-        :param p_phase: Phase parameters (phi_k, theta_k).  Scalar or size-(m, n, 2) tensor.
-        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar or size-(m, n, 2) tensor.
-        :param A: The matrix to be represented.  If specified, runs squaredec() to find the SquareNet decomposition,
-        and any information in p_phase is overwritten.
-        """
-        super(SquareNetworkMZI, self).__init__(p_phase, p_splitter, X=MZICrossing(), M=M)
-
-
-def calibrateRatio(m, n, Npost, U, p_splitter, X, jrange, warn):
+def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9):
     r"""
-    A general Ratio Method routine to calibrate an m*n SquareNet or associated subgraph.
-    :param m: Number of falling diagonals.
-    :param n: Number of rising diagonals.
-    :param Npost: Total number of waveguides.
-    :param U: Target matrix.
-    :param p_splitter: Beamsplitter imperfections.
-    :param X: Crossing element.  Only MZICrossing supported at present.
-    :param jrange: Range of the j-loop.  Function of i.
-    :param warn: Warns the presence of errors.
-    :return: p_phase
+    Self-configures a SquareNet mesh according to the diagonalization method.
+    :param m: Instance of SquareNetwork.
+    :param M: Target matrix.
+    :param eig: maximum eigenvector of M*M, after rescaling (set t = None to prevent rescaling)
+    :return:
     """
-    p_phase = np.zeros([m, n, X.n_phase], dtype=np.float)
-    Upost = np.eye(Npost, dtype=np.complex)
-    if not isinstance(X, MZICrossing):
-        raise NotImplementedError("Only standard MZI crossings supported for now.")
-    Xf = X.flip()
+    M11 = M; (M, N) = M11.shape; assert (m.shape == M11.shape); out = (m.phi_pos == 'out')
 
-    # (i, j): diagonal index, MZI index within diagonal (Fig. 1a)
-    err = 0
-    for i in range(m):
-        for j in jrange(i):
-            ind = (n-1)+i-j  # position of MZI relative to top of triangle
-            # For each (i, j), find the current MZI's splitting ratio [theta] and last MZI's phase [phi_last]
-            if (j == n):
-                b = Upost[:, ind+1]
-                p_phase[i, 0, 1] = phi = np.angle(b.conj().dot(U[:, i]))
-                Upost[:, ind+1] *= np.exp(1j*phi)
-            else:
-                bc = Upost[:, ind:ind+2]  # Vectors [b, c]
-                (T11, T21) =  bc.conj().T.dot(U[:, i])   # Targets: (T11, T21) ~ (b* u_i, c* u_i)
-                ((theta, phi), d_err) = Xf.Tsolve((T11, T21), 'T:1', p_splitter[i, n-1-j]); err += d_err
-                p_phase[i, n-1-j, 0] = theta
-                if j: p_phase[i, n-j, 1] = phi
-                T = Xf.T((theta, phi), p_splitter[i, n-1-j])
-                Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)
-    if (warn and err):
-        warnings.warn(
-            "SquareNet calibration: {:d}/{:d} matrix values could not be set.".format(err, m*n))
-    return p_phase
+    if out:
+        # Set up U = [[M, M']], where MM* + (M')(M'*) = 1
+        MMt = M11.dot(M11.conj().T); fact = np.sqrt(eig / eigvalsh(MMt, subset_by_index=[M-1, M-1])[0]) if eig else 1.0
+        MMt *= fact**2; M11 *= fact; M12 = cholesky(np.eye(M) - MMt)
+        U = np.zeros([M+N, M+N], dtype=np.complex); U[:M, :N] = M11; U[:M, N:] = M12
+        # Call the subroutine that self-configures meshes by matrix diagonalization.
+        def nn_sq(m): return N
+        def ijxyp_sq(m, n): return [m, N+m-n, m+n, N-1+m-n, m*0]
+        diag(m.full, None, m.full.phi_out, U, M, nn_sq, ijxyp_sq)
+    else:
+        # Set up U = [[M], [M']], where M*M + (M'*)(M') = 1
+        MtM = M11.T.conj().dot(M11); fact = np.sqrt(eig / eigvalsh(MtM, subset_by_index=[N-1, N-1])[0]) if eig else 1.0
+        MtM *= fact**2; M11 *= fact; M21 = cholesky(np.eye(N) - MtM).T.conj()
+        U = np.zeros([M+N, M+N], dtype=np.complex); U[:M, :N] = M11; U[M:, :N] = M21
+        # Call the subroutine that self-configures meshes by matrix diagonalization.
+        def nn_sq(m): return M
+        def ijxyp_sq(m, n): return [M+m-n, m, -m-n, M-1-n+m, m*0+1]
+        diag(None, m.full, m.full.phi_out, U, N, nn_sq, ijxyp_sq)
 
-def squaredec_ratio(M, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
+def directSquare(m: SquareNetwork, M: np.ndarray, eig=0.9):
     r"""
-    Gets p_phase for the Reck triangle using the Ratio Method strategy.  See PNP/Note8-SqTuning.pdf.
-    :param M: Target matrix.  |M| < 1.
-    :param p_splitter: Splitter errors or other manufacturing imperfections.
-    :param X: Crossing class.  Only MZICrossing supported at present.  TODO -- why?
-    :param warn: Warns the presence of calibration errors.
-    :return: p_phase
+    Self-configures a SquareNet mesh according to the direct method.
+    :param m: Instance of SquareNetwork.
+    :param M: Target matrix.
+    :param eig: maximum eigenvector of M*M, after rescaling (set t = None to prevent rescaling)
+    :return:
     """
-    N = len(M); assert (M.shape == (N, N))
-    K = np.linalg.cholesky(np.eye(N) - M.conj().T.dot(M)).T.conj()   # 1 - M*M = K*K
-    U = np.concatenate([M, K], axis=0)   # Left half of a unitary matrix.  U*U = 1.  U includes auxiliary outputs.
-    p_splitter = np.ones([N, N, X.n_splitter]) * p_splitter
-
-    return calibrateRatio(N, N, 2*N, U, p_splitter, X, lambda i: range(N+1), warn)
-
-def reckdec_ratio(U, p_splitter: Any=0., X: Crossing=MZICrossing(), warn=True):
-    r"""
-    Gets p_phase for the Reck triangle using the Ratio Method strategy.  See PNP/Note8-SqTuning.pdf.
-    :param U: Target matrix.  Unitary.
-    :param p_splitter: Splitter errors or other manufacturing imperfections.
-    :param X: Crossing class.  Only MZICrossing supported at present.  TODO -- why?
-    :param warn: Warns the presence of calibration errors.
-    :return: p_phase
-    """
-    N = len(U); assert (U.shape == (N, N))
-    p_splitter = np.ones([N, N, X.n_splitter]) * p_splitter
-    p_splitter.reshape([N*N, 2])[N-1::N-1,:] = -np.pi/4
-    return calibrateRatio(N, N, N, U, p_splitter, X, lambda i: range(i+1, N+1), warn)
-
-
-class ReckSquare(SquareNetwork):
-    def __init__(self, p_phase=0.0, p_splitter=0.0, M=None, method='direct'):
-        N = len(M) if (M is not None) else len(p_phase)
-        if (type(p_splitter) != np.ndarray): p_splitter = np.ones([N, N, 2])*p_splitter
-        p_splitter = np.array(p_splitter)
-        p_splitter.reshape([N*N, 2])[N-1::N-1,:] = -np.pi/4
-        if (M is not None):
-            if (method == 'direct'):
-                super(ReckSquare, self).__init__(p_phase, p_splitter, MZICrossing(), M)
-            elif (method == 'ratio'):
-                p_phase = reckdec_ratio(M, p_splitter)  # <-- All the hard work goes here.
-                super(ReckSquare, self).__init__(p_phase, p_splitter, MZICrossing())
-            else:
-                raise ValueError(method)
-        else:
-            super(ReckSquare, self).__init__(p_phase, p_splitter, MZICrossing())
-
-    def matrix(self, p_phase=None, p_splitter=None, aux=False):
-        if (p_splitter is not None):
-            p_splitter = np.array(p_splitter) * np.ones([self.N, self.N, 2])
-            p_splitter.reshape([self.N*self.N, 2])[self.N-1::self.N-1,:] = -np.pi/4
-        else:
-            p_splitter = self.p_splitter
-        return super(ReckSquare, self).matrix(p_phase, p_splitter, aux)
+    fact = np.sqrt(eig / eigvalsh(M.dot(M.conj().T), subset_by_index=[M.shape[0]-1, M.shape[0]-1])[0]) if eig else 1.0
+    m = m.full
+    M *= fact; U = np.zeros([m.N, m.N], dtype=np.complex); U[:M.shape[0], :M.shape[1]] = M
+    direct(m, U, 'down')
