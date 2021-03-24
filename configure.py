@@ -7,6 +7,7 @@
 #   01/05/21: Method invented (part of meshes/clements.py)
 #   03/03/21: Extended to general meshes, including Reck.  Moved to this file.
 #   03/06/21: JIT-ed my direct method code and added it here.
+#   03/22/21: Added Saumil's local EC method (see arXiv:2103.04993).
 
 import numpy as np
 from numba import njit
@@ -16,9 +17,9 @@ from .crossing import MZICrossing, MZICrossingOutPhase
 
 # Iterative (theta, phi) optimization to solve: <a|T(theta, phi)|b> = c.  JITted to speed up the for loop.
 @njit
-def Tsolve_abc(p_splitter, a, b, c, n):
+def Tsolve_abc(p_splitter, a, b, c, n, sign):
     (Cp, C) = np.cos(p_splitter + np.pi/4); (Sp, S) = np.sin(p_splitter + np.pi/4)
-    (a1, a2) = (a[0]*C + 1j*a[1]*S, 1j*a[0]*S + a[1]*C); (b1, b2) = (b[0], b[1]); (theta, phi) = (np.pi/2, 0.)
+    (a1, a2) = (a[0]*C + 1j*a[1]*S, 1j*a[0]*S + a[1]*C); (b1, b2) = (b[0], b[1]); (theta, phi) = (sign*np.pi/2, 0.)
     for i in range(n):
         a1p = a1 * np.exp(1j*theta); (u1, u2) = (a1p*Cp + 1j*a2*Sp, 1j*a1p*Sp + a2*Cp)
         phi = np.angle(c - b2*u2) - np.angle(b1*u1)
@@ -28,9 +29,9 @@ def Tsolve_abc(p_splitter, a, b, c, n):
         #print (np.abs(c - u1*a1*np.exp(1j*theta) - u2*a2))
     return np.array([theta/2, phi])
 @njit
-def Tsolve_abc_out(p_splitter, a, b, c, n):
+def Tsolve_abc_out(p_splitter, a, b, c, n, sign):
     (Cp, C) = np.cos(p_splitter + np.pi/4); (Sp, S) = np.sin(p_splitter + np.pi/4)
-    (a1, a2) = (a[0], a[1]); (b1, b2) = (b[0]*Cp + 1j*b[1]*Sp, 1j*b[0]*Sp + b[1]*Cp); (theta, phi) = (np.pi/2, 0.)
+    (a1, a2) = (a[0], a[1]); (b1, b2) = (b[0]*Cp + 1j*b[1]*Sp, 1j*b[0]*Sp + b[1]*Cp); (theta, phi) = (sign*np.pi/2, 0.)
     for i in range(n):
         b1p = b1 * np.exp(1j*theta); (u1, u2) = (b1p*C + 1j*b2*S, 1j*b1p*S + b2*C)
         phi = np.angle(c - u1*a1) - np.angle(u2*a2)
@@ -59,7 +60,7 @@ def Tsolve_11(T, p_splitter):
     Cp = np.cos(alpha+beta); Cm = np.cos(alpha-beta); Sp = np.sin(alpha+beta); Sm = np.sin(alpha-beta)
     # Input target T = T[0, 0]
     S2 = (np.abs(T)**2 - Sp**2) / (Cm**2 - Sp**2)
-    theta = np.arcsin(np.sqrt(min(max(S2, 0.), 1.)))
+    theta = np.arcsin(np.sqrt(np.minimum(np.maximum(S2, 0.), 1.)))
     if (np.isnan(theta)): theta = 0.
     phi = np.angle(T) - np.angle(1j*Cm*np.sin(theta) - np.cos(theta)*Sp) - theta
     return np.array([theta, phi])
@@ -102,13 +103,14 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
 
     #print (np.array([i, j, x, y, ind, r]).T)
     #print (U.shape); print (VdV.shape); print (WWd.shape)
-    diagHelper(U, Z, VdV, WWd, *p, *c, np.array([i, j, ind, r]).T)
+    ijzp = np.array([i, j, ind, r]).T; rand = np.random.randint(0, 2, len(ijzp))*2 - 1
+    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand)
     phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
 
 # Super-fast Numba JIT-accelerated self-configuration code that implements the matrix diagonalization method.
 # Runs 10-20x faster than pure Python version.
 @njit
-def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp):
+def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand):
     #X = np.array(U)
     for k in range(len(ijzp)):
         (i, j, ind, p) = ijzp[k]  # (i, j): element to zero.  ind: MZI index.  p: 0 (left mesh) or 1 (right mesh)
@@ -121,7 +123,7 @@ def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp):
             for M in [U, WWd]: M[:, j1:j1+2] = M[:, j1:j1+2].dot(T0dag)
             Z[:, j1:j1+2] = Z[:, j1:j1+2].dot(T_mzi(c1[ind], p1[ind]).conj().T)
             wj = WWd[:, j]; vi = VdV[i, :].dot(Z); res = wj.dot(vi) - wj[j1:j1+2].dot(vi[j1:j1+2])
-            c1[ind] = Tsolve_abc(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10)
+            c1[ind] = Tsolve_abc(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, rand[k])
             T = T_mzi(c1[ind], p1[ind])
             WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
             #X[:, j1:j1+2] = X[:, j1:j1+2].dot(T.conj().T)
@@ -133,7 +135,7 @@ def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp):
             for M in [U, VdV]: M[i1:i1+2, :] = T0dag.dot(M[i1:i1+2, :])
             Z[i1:i1+2, :] = T_mzi_o(c2[ind], p2[ind]).conj().T.dot(Z[i1:i1+2, :])
             wj = Z.dot(WWd[:, j]); vi = VdV[i, :]; res = wj.dot(vi) - wj[i1:i1+2].dot(vi[i1:i1+2])
-            c2[ind] = Tsolve_abc_out(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10)
+            c2[ind] = Tsolve_abc_out(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, rand[k])
             T = T_mzi_o(c2[ind], p2[ind])
             VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
             #X[i1:i1+2, :] = T.conj().T.dot(X[i1:i1+2, :])
@@ -207,3 +209,26 @@ def directHelper(pos, lpos, inds, p_splitter, p_crossing, phi_out, outfield, is_
         Upost[:, ind+1] *= np.exp(1j*phi)
         for (ind, T) in zip(pos_i[:, 2], Tlist[len(pos_i)-1::-1]):
             Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)   # Multiply Upost by diagonal's T.
+
+def errcorr_local(mesh: StructuredMeshNetwork, p_splitter: np.ndarray) -> StructuredMeshNetwork:
+    r"""
+    Performs local error correction routine to match a target mesh's matrix.  Works for any single-pass mesh structure.
+    For details, see: S. Bandyopadhyay et al., "Hardware error correction for programmable photonics" [2103.04993]
+    :param mesh: The target (ideal) mesh.
+    :param p_splitter: Splitter imperfections, dim=(mesh.n_cr, X.n_splitter)
+    :return:
+    """
+    X = mesh.X; lens = mesh.lens; shifts = mesh.shifts; inds = mesh.inds; p_phase = mesh.p_phase
+    out = mesh.copy(); phase = np.zeros([mesh.N])
+    out.p_splitter = p_splitter; mesh.p_splitter = mesh.p_splitter * np.ones(out.p_splitter.shape)
+
+    for (i, l, s, ind) in zip(range(out.L), lens, shifts, inds):
+        ph0 = mesh.p_crossing[ind:ind+l]; ph = out.p_crossing[ind:ind+l]
+        sp0 = mesh.p_splitter[ind:ind+l]; sp = out.p_splitter[ind:ind+l]
+        phase = (phase if (mesh.perm[i] is None) else phase[mesh.perm[i]]); psi = phase[s:s+2*l]
+        T0 = X.T(ph0, sp0); T0[:, 0, :] *= np.exp(1j*psi[::2]); T0[:, 1, :] *= np.exp(1j*psi[1::2])  # Target Tij
+        ph[:] = np.array(X.Tsolve((T0[0, 0], T0[0, 1]), 'T1:', sp.T)[:1])[0].T
+        psi[:] = np.angle(T0/X.T(ph, sp))[:, 0, :].T.flatten()
+    phase = phase if (mesh.perm[-1] is None) else phase[mesh.perm[-1]]
+    out.phi_out += phase
+    return out

@@ -16,6 +16,7 @@
 #   01/05/21: Added new Clements tuning method.
 #   03/03/21: Extended "new" (matrix diagonalization) method to Reck and general mesh shapes.
 #   03/06/21: Revamped SquareNet.  Added the triangular QR mesh.
+#   03/22/21: Created ButterflyNetwork class and added the local error correction routine errcorr_local
 
 from .crossing import Crossing, MZICrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
@@ -23,6 +24,8 @@ from .reck import ReckNetwork
 from .clements import ClementsNetwork, SymClementsNetwork
 from .square import SquareNetwork
 from .qr import QRNetwork
+from .butterfly import ButterflyNetwork
+from .configure import errcorr_local
 
 import scipy.stats
 

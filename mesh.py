@@ -101,6 +101,8 @@ class StructuredMeshNetwork(MeshNetwork):
     shifts: List[int]
     X: Crossing
     phi_pos: str
+    perm: List
+    is_phase: bool
 
     def __init__(self,
                  N: int,
@@ -110,8 +112,10 @@ class StructuredMeshNetwork(MeshNetwork):
                  p_splitter: Any=0.,
                  p_crossing=None,
                  phi_out=None,
+                 perm=None,
                  X: Crossing=MZICrossing(),
-                 phi_pos='out'):
+                 phi_pos='out',
+                 is_phase=True):
         r"""
         Manages the beamsplitters for a Clements beamsplitter mesh.
         :param N: Number of inputs / outputs.
@@ -119,6 +123,12 @@ class StructuredMeshNetwork(MeshNetwork):
         :param shifts: List of the shifts for each column.
         :param p_phase: Parameters [phi_i] for phase shifters.
         :param p_splitter: Parameters [beta_i - pi/4] for beam splitters.
+        :param p_crossing: Crossing parameterrs (theta, phi).  Takes place of p_phase.
+        :param phi_out: External phase screen.  Takes place of p_phase.
+        :param perm: List of permutations, if any.
+        :param X: Crossing type.
+        :param phi_pos: Position of external phase screen.
+        :param is_phase: Whether to include the phase screen.  If not, mesh will not be universal.
         """
         self.X = X
         self._N = N
@@ -126,13 +136,15 @@ class StructuredMeshNetwork(MeshNetwork):
         self.lens = lens; n_cr = sum(lens)
         self.shifts = shifts
         self.inds = np.cumsum([0] + list(lens)).tolist()
-        self.p_phase = p_phase * np.ones(n_cr*X.n_phase + N, dtype=np.float)
+        self.p_phase = p_phase * np.ones(n_cr*X.n_phase + N*is_phase, dtype=np.float)
         self.p_splitter = np.array(p_splitter)
         self.phi_pos = phi_pos
+        self.is_phase = is_phase
+        self.perm = ([None]*(self.L+1) if (perm is None) else perm); assert len(self.perm) == self.L+1
         if not (p_crossing is None): self.p_crossing[:] = p_crossing
         if not (phi_out is None): self.phi_out[:] = phi_out
         assert len(shifts) == len(lens)
-        assert self.p_phase.shape in [(), (n_cr*X.n_phase + self.N,)]
+        assert self.p_phase.shape in [(), (n_cr*X.n_phase + self.N*is_phase,)]
         assert self.p_splitter.shape in [(), (n_cr, X.n_splitter)]
 
     @property
@@ -144,6 +156,9 @@ class StructuredMeshNetwork(MeshNetwork):
     @property
     def N(self):
         return self._N
+    @property
+    def prem_r(self):
+        return [None if (p is None) else np.argsort(p) for p in self.perm]
 
     @property
     def n_cr(self):
@@ -175,14 +190,14 @@ class StructuredMeshNetwork(MeshNetwork):
     def phi_out(self, p):
         self.phi_out[:] = p
     def _get_phi_out(self, p_phase=None):
-        return (self.p_phase if (p_phase is None) else p_phase)[-self.N:]
+        return (self.p_phase if (p_phase is None) else p_phase)[self.n_cr*self.X.n_phase:]
 
     def _defaults(self, p_phase, p_splitter, p_crossing, phi_out):
         # Gets default values assuming certain inputs and current state of the mesh.
         assert (p_crossing is None) == (phi_out is None)
         p_splitter = (self.p_splitter if (p_splitter is None) else p_splitter) * np.ones([self.n_cr, self.X.n_splitter])
         if (p_crossing is not None):
-            assert (p_crossing.shape == (self.n_cr, self.X.n_phase)) and (phi_out.shape == (self.N,))
+            assert (p_crossing.shape == (self.n_cr, self.X.n_phase)) and (phi_out.shape == (self.N*self.is_phase,))
             return (p_crossing, phi_out, p_splitter)
         else:
             return (self._get_p_crossing(p_phase), self._get_phi_out(p_phase), p_splitter)
@@ -191,13 +206,17 @@ class StructuredMeshNetwork(MeshNetwork):
         v = np.array(v, dtype=np.complex)
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
         # Loop through the crossings, one row at a time.  Then apply the final phase shifts.
-        if (self.phi_pos == 'in'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-        for (i1, i2, L, s) in zip(self.inds[:-1], self.inds[1:], self.lens, self.shifts):
+        if (self.is_phase and self.phi_pos == 'in'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+        for (i, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
+            v = v if (self.perm[i] is None) else v[self.perm[i]]
             v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L])
-        if (self.phi_pos == 'out'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+        v = v if (self.perm[-1] is None) else v[self.perm[-1]]
+        if (self.is_phase and self.phi_pos == 'out'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
         return v
 
     def grad_phi(self, v, w, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None):
+        assert self.is_phase   # TODO -- handle case with no phase screen.
+        assert np.all([p is None for p in self.perm])  # TODO -- handle permutations.
         assert self.phi_pos == 'out'  # TODO -- handle phase shifts on inputs too.
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
         vList = np.zeros((len(self.lens)+1,) + v.shape, dtype=np.complex); vList[0] = v
@@ -225,7 +244,8 @@ class StructuredMeshNetwork(MeshNetwork):
         :return:
         """
         return StructuredMeshNetwork(self.N, self.lens.copy(), self.shifts.copy(), np.array(self.p_phase),
-                                     np.array(self.p_splitter), X=self.X, phi_pos=self.phi_pos)
+                                     np.array(self.p_splitter), perm=self.perm, is_phase=self.is_phase,
+                                     X=self.X, phi_pos=self.phi_pos)
 
     def flip_crossings(self, inplace=False) -> 'StructuredMeshNetwork':
         r"""
