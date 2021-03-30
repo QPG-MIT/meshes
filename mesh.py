@@ -11,12 +11,13 @@
 #   07/10/20: Added compatibility for custom crossings in crossing.py.
 #   12/15/20: Added Ratio Method tuning triangular meshes.
 #   12/19/20: Added Direct Method for tuning triangular meshes.
+#   03/29/21: Added utility to convert between crossing types.  Tweaks to gradient function.  Hessian support.
 
 
 import autograd.numpy as npa
 import numpy as np
 import warnings
-from typing import List, Any, Tuple
+from typing import List, Any, Tuple, Callable
 from .crossing import Crossing, MZICrossing, MZICrossingOutPhase
 
 
@@ -44,6 +45,12 @@ class MeshNetwork:
         Output dimension of the mesh network.  Thus, self.matrix().shape == (self.M, self.N)
         """
         raise NotImplementedError()
+    @property
+    def n_phase(self) -> int:
+        r"""
+        Number of phase degrees of freedom (due to crossings plus phase screen)
+        """
+        return len(p_phase)
     @property
     def shape(self) -> Tuple[int, int]:
         r"""
@@ -78,7 +85,7 @@ class MeshNetwork:
         :return:
         """
         raise NotImplementedError()
-    def grad_phi_target(self, U_target, p_phase=None, p_splitter=None) -> np.ndarray:
+    def grad_phi_target(self, U_target, p_phase=None, p_splitter=None) -> Tuple[float, np.ndarray]:
         r"""
         Gets the gradient of the L2 norm |U - U_target|^2 with respect to the phase parameters.
         :param U_target: Target matrix, size (M, N)
@@ -87,10 +94,10 @@ class MeshNetwork:
         :return:
         """
         J = [0]
-        def f(U):
-            V = U - U_target; J[0] = np.linalg.norm(V)**2; return V
+        def f(U): V = U - U_target; J[0] = np.linalg.norm(V)**2; return V
         grad = 2*np.real(self.grad_phi(np.eye(self.M), f, p_phase, p_splitter)[0])
         return (J[0], grad)
+
 
 
 
@@ -157,7 +164,10 @@ class StructuredMeshNetwork(MeshNetwork):
     def N(self):
         return self._N
     @property
-    def prem_r(self):
+    def n_phase(self) -> int:
+        return self.n_cr*self.X.n_phase + self.is_phase*self.N
+    @property
+    def perm_r(self):
         return [None if (p is None) else np.argsort(p) for p in self.perm]
 
     @property
@@ -178,7 +188,8 @@ class StructuredMeshNetwork(MeshNetwork):
     def p_crossing(self, p):
         self.p_crossing[:] = p
     def _get_p_crossing(self, p_phase=None):
-        return (self.p_phase if (p_phase is None) else p_phase)[:-self.N].reshape([self.n_cr, self.X.n_phase])
+        return (self.p_phase if (p_phase is None)
+                else p_phase)[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
     @property
     def phi_out(self):
         r"""
@@ -214,29 +225,116 @@ class StructuredMeshNetwork(MeshNetwork):
         if (self.is_phase and self.phi_pos == 'out'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
         return v
 
+    def _L2norm_fn(self, J):
+        def f(U):
+            V = U - np.eye(self.N, dtype=np.complex)
+            if not self.is_phase: V -= np.diag(np.diag(V))
+            J[0] = np.linalg.norm(V)**2; return 2*V
+        return f
+
+    def L2norm(self, U_target, p_phase=None, p_splitter=None) -> float:
+        r"""
+        Returns the L2 norm |U_target^dag * U - 1|^2.  If is_phase=False, only takes norm over off-diagonal elements.
+        :param U_target: Target matrix, size (M, N)
+        :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
+        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
+        :return:
+        """
+        J = [0]; f = self._L2norm_fn(J); f(self.dot(U_target.T.conj(), p_phase=p_phase, p_splitter=p_splitter))
+        return J[0]
+
+    def grad_phi_target(self, U_target, p_phase=None, p_splitter=None) -> Tuple[float, np.ndarray]:
+        r"""
+        Gets the gradient of the L2 norm |U_target^dag * U - 1|^2 with respect to the phase parameters.  If is_phase=False
+        (no phase screen), only takes the norm over off-diagonal elements (phase screen can correct for the diagonal).
+        :param U_target: Target matrix, size (M, N)
+        :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
+        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
+        :return:
+        """
+        J = [0]; f = self._L2norm_fn(J)
+        grad = np.real(self.grad_phi(U_target.T.conj(), f, p_phase, p_splitter)[0])
+        return (J[0], grad)
+
     def grad_phi(self, v, w, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None):
-        assert self.is_phase   # TODO -- handle case with no phase screen.
         assert np.all([p is None for p in self.perm])  # TODO -- handle permutations.
         assert self.phi_pos == 'out'  # TODO -- handle phase shifts on inputs too.
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
-        vList = np.zeros((len(self.lens)+1,) + v.shape, dtype=np.complex); vList[0] = v
-        grad = np.zeros(len(self.p_phase), dtype=np.float)
-        grad_crossing = grad[:-self.N].reshape((self.n_cr, self.X.n_phase)); grad_phiout = grad[-self.N:]
+        v = v + 0j; Nc = self.n_cr*self.X.n_phase; grad = np.zeros(Nc+self.N*self.is_phase)
+        grad_phiout = grad[Nc:]; grad_xing = grad[:Nc].reshape((self.n_cr, self.X.n_phase))
+
         # Forward pass
         for (n, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
-            vList[n+1, s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], vList[n, s:s+2*L])
-            vList[n+1, :s] = vList[n, :s]; vList[n+1, s+2*L:] = vList[n, s+2*L:]
-        v_out = vList[-1] * np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-        # Can use callable w to specify a derivative based on the output matrix v_out.
-        w = w(v_out) if callable(w) else np.array(w)
-        # Reverse pass
-        grad_phiout[:] = np.real(-1j * w * v_out.conj()).sum(-1)
-        w *= np.exp(-1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+            v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L])
+        if self.is_phase:
+            v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+        # Can use callable w to specify a derivative based on the output matrix v.
+        w = w(v) if callable(w) else np.array(w)
+        # Reverse pass.  Back-propagate v rather than storing it to save memory (arithmetic intensity is low).
+        if self.is_phase:
+            grad_phiout[:] = np.real(-1j * w * v.conj()).sum(-1)
+            w *= np.exp(-1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+            v *= np.exp(-1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
         for n in range(len(self.lens)-1, -1, -1):
             (i1, i2, L, s) = (self.inds[n], self.inds[n+1], self.lens[n], self.shifts[n])
-            grad_crossing[i1:i2] = self.X.grad(p_crossing[i1:i2], p_splitter[i1:i2], vList[n, s:s+2*L], w[s:s+2*L])
+            v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L], True)
+            grad_xing[i1:i2] = self.X.grad(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L], w[s:s+2*L])
             w[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], w[s:s+2*L], True)
         return (grad, w)
+
+    def hvp(self, vec, v, w: Callable, p_phase=None, p_splitter=None, eps=1e-3) -> np.ndarray:
+        r"""
+        Hessian-vector product vec -> H*vec.  Computed by finite difference.
+        :param vec: Vector in parameter space.
+        :param v: Input matrix
+        :param w: Function that computes gradient of objective J (in terms of output matrix).
+        :param p_phase: Phase parameters (phi_k).
+        :param p_splitter: Splitter parameters.
+        :param eps: Finite-difference step amplitude.
+        :return:
+        """
+        p_phase = self.p_phase if (p_phase is None) else p_phase
+
+        return (self.grad_phi(v, w, p_phase + vec*eps, p_splitter)[0]
+                - self.grad_phi(v, w, p_phase - vec*eps, p_splitter)[0])/(2*eps)
+
+    def hvp_target(self, vec: np.ndarray, U_target, p_phase=None, p_splitter=None, eps=1e-3) -> np.ndarray:
+        r"""
+        Hessian-vector product vec -> H*vec for L2 norm |U - U_target|^2.
+        :param vec: Vector in parameter space.
+        :param U_target: Target unitary.
+        :param p_phase: Phase parameters (phi_k).
+        :param p_splitter: Splitter parameters.
+        :param eps: Finite-difference step amplitude.
+        :return:
+        """
+        J = [0]; w = self._L2norm_fn(J); v = U_target.T.conj()
+        return self.hvp(vec, v, w, p_phase, p_splitter, eps)
+
+    def hess(self, v, w: Callable, p_phase=None, p_splitter=None, eps=1e-3) -> np.ndarray:
+        r"""
+        Hessian.  Computed by finite difference.
+        :param v: Input matrix
+        :param w: Function that computes gradient of objective J (in terms of output matrix).
+        :param p_phase: Phase parameters (phi_k).
+        :param p_splitter: Splitter parameters.
+        :param eps: Finite-difference step amplitude.
+        :return:
+        """
+        vec = np.eye(self.n_phase)
+        return np.array([self.hvp_target(vec_i, v, w, p_phase, p_splitter, eps) for vec_i in vec])
+
+    def hess_target(self, U_target, p_phase=None, p_splitter=None, eps=1e-3) -> np.ndarray:
+        r"""
+        Hessian for the L2 norm |U - U_target|^2.
+        :param U_target: Target unitary.
+        :param p_phase: Phase parameters (phi_k).
+        :param p_splitter: Splitter parameters.
+        :param eps: Finite-difference step amplitude.
+        :return:
+        """
+        vec = np.eye(self.n_phase)
+        return np.array([self.hvp_target(vec_i, U_target, p_phase, p_splitter, eps) for vec_i in vec])
 
     def copy(self) -> 'StructuredMeshNetwork':
         r"""
@@ -319,6 +417,35 @@ class StructuredMeshNetwork(MeshNetwork):
         for (i, j0, nj, ind) in zip(range(self.L), self.shifts, self.lens, self.inds):
             out[i, j0//2:j0//2+nj, :] = self.p_splitter[ind:ind+nj, :]
         return out
+
+    def convert(self,
+                X: Crossing,
+                p_splitter: np.ndarray=0.):
+        r"""
+        Converts the network to a different crossing type.
+        :param X: New crossing type.
+        :param p_splitter: Splitter imperfections (if any) in the new type.
+        :return: A StructuredMeshNetwork object.
+        """
+        assert (np.all([p is None for p in self.perm]))  # TODO -- generalize
+        phi_out = np.zeros([self.N])
+        s_in = self.p_splitter + np.zeros([self.n_cr, self.X.n_splitter])
+        p_in = self.p_crossing
+        s_out = p_splitter * np.zeros([self.n_cr, X.n_splitter])
+        p_out = np.zeros([self.n_cr, X.n_phase])
+
+        # Convert each layer and propagate the phases to the right [left].  Merge with output [input] phase screen.
+        if (self.phi_pos == 'out'):
+            for (ind, L, s) in zip(self.inds, self.lens, self.shifts):
+                (p_out[ind:ind+L], phi_out[s:s+2*L]) = self.X.convert(X, p_in[ind:ind+L], s_in[ind:ind+L], s_out[ind:ind+L],
+                                                                      phi_out[s:s+2*L], self.phi_pos)
+            phi_out += self.phi_out
+        else:
+            raise NotImplementedError()  # TODO -- generalize to 'in'
+
+        return StructuredMeshNetwork(N=self.N, lens=self.lens, shifts=self.shifts, p_splitter=s_out, p_crossing=p_out,
+            phi_out=phi_out if self.is_phase else None, perm=self.perm, X=X, phi_pos=self.phi_pos, is_phase=self.is_phase)
+
 
 
 def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):

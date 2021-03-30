@@ -10,6 +10,7 @@
 #   07/10/20: Added clemshift() functionality (convert T(p)* psi -> psi' T(p') for Clements decomposition).
 #   12/10/20: Added MZICrossingOutPhase with phase shifter on the lower output.
 #   12/20/20: Added MZICrossingSym (symmetric +theta / -theta pairing)
+#   03/29/21: Added CartesianCrossing (non-singular parameterization) and crossing conversion utility.
 
 import numpy as np
 from typing import Any, Tuple
@@ -20,6 +21,9 @@ class Crossing:
         raise NotImplementedError()
     @property
     def n_splitter(self) -> int:
+        raise NotImplementedError()
+    @property
+    def tunable_indices(self) -> Tuple:
         raise NotImplementedError()
 
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
@@ -137,9 +141,40 @@ class Crossing:
         return np.real(gradY.reshape((1, k, m, q)) * dTx.conj()).sum(axis=(2, 3)).T
         # Gotta love the index manipulation lol
 
-    @property
-    def tunable_indices(self) -> Tuple:
-        raise NotImplementedError()
+    def convert(self,
+                out: 'Crossing',
+                p_phase: np.ndarray,
+                p_splitter: np.ndarray=None,
+                p_splitter_out: np.ndarray=None,
+                phi: np.ndarray=None,
+                phi_pos: str='out') -> Tuple[np.ndarray, np.ndarray]:
+        r"""
+        Converts a particular Crossing to a different type.  Given (D, p), solves for (D', p') such that
+        D'*T_out(p') = T_self(p)*D (if phi_pos='out'), or T_out(p')*D' = D*T_self(p) (if 'in')
+        :param out: The output crossing instance.
+        :param p_phase: Crossing parameters.
+        :param p_splitter: Splitter imperfections.
+        :param p_splitter_out: Splitter imperfections (output)
+        :param phi: Phase screen.
+        :param phi_pos: Position to propagate the phase screen.
+        :return: Tuple (p', phi')
+        """
+        # Set up arrays.
+        def set(p, s): p = np.zeros(s) if (p is None) else p; assert (p.shape == tuple(s)); return p
+        n_cr = len(p_phase); p_in = set(p_phase, [n_cr, self.n_phase]); phi = set(phi, [2*n_cr])
+        s_in = set(p_splitter, [n_cr, self.n_splitter]); s_out = set(p_splitter_out, [n_cr, out.n_splitter])
+
+        if (phi_pos == 'out'):
+            # Compute T0*D0 from old crossing, find T based on amplitude ratios, solve new phases D*T = T0*D0 based on:
+            # D = diag(T0*D0*(T*)) (the latter should be a diagonal matrix)
+            T0 = self.T(p_in, s_in); T0[:, 0] *= np.exp(1j*phi[::2]); T0[:, 1] *= np.exp(1j*phi[1::2])
+            p_out = np.array(out.Tsolve((T0[0, 0], T0[0, 1]), 'T1:', s_out.T)[0]).T
+            T = out.T(p_out, s_out)
+            phi = np.array([np.angle(T0[i, 0]*T[i, 0].conj() + T0[i, 1]*T[i, 1].conj()) for i in [0, 1]]).T.flatten()
+            return (p_out, phi)
+        else:
+            raise NotImplementedError()  # TODO -- implement the left phase propagation.
+
 
 
 
@@ -200,7 +235,7 @@ class MZICrossing(Crossing):
             (C, S) = (np.cos(theta), np.sin(theta))
             phi = np.angle(-1j*Cm*S - Sp*C) - np.angle(1j*Cp*C + Sm*S) + np.angle(T[0]) - np.angle(T[1])
         else:
-            raise NotImplementedError()
+            raise NotImplementedError(ind)
         return ((theta, phi), err)
 
     def clemshift(self, psi, p_phase, p_splitter: Any=0) -> Tuple[Tuple, Tuple]:
@@ -231,6 +266,9 @@ class MZICrossing(Crossing):
     @property
     def tunable_indices(self) -> Tuple:
         return ('T11', 'T21', 'T1:', 'T2:')
+
+
+
 
 class MZICrossingSym(MZICrossing):
     def __init__(self):
@@ -300,3 +338,62 @@ class MZICrossingOutPhase(MZICrossing):
     @property
     def tunable_indices(self) -> Tuple:
         return ('T22', 'T21', 'T:1', 'T:2')
+
+
+
+
+class CartesianCrossing(Crossing):
+    @property
+    def n_phase(self) -> int:
+        return 2
+    @property
+    def n_splitter(self) -> int:
+        return 2
+    @property
+    def tunable_indices(self) -> Tuple:
+        return ('T1:',)
+
+    def __init__(self):
+        r"""
+        Class implementing an MZI crossing in non-singular Cartesian coordinates.  Representation depends on the angle:
+        [ s                i sqrt(1-|s|^2) ]
+        [ i sqrt(1-|s|^2)  s*              ]
+        for theta < pi/2 (s = sin(theta/2)*e^{i*phi}) and
+        [ i sqrt(1-|t|^2)  t               ]
+        [ t*               i sqrt(1-|t|^2) ]
+        for theta > pi/2 (t = cos(theta/2)*e^{i*phi})
+        Here p_phase = (Re[s]+2, Im[s]) or (Re[t]-2, Im[t]) depending on the representation.  Constrained to unit
+        disks centered at (2+0j) or (-2+0j).
+        and p_splitter = (alpha, beta).  The (+/- 2) is to
+        """
+        pass
+
+    def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        (x, y) = np.array(p_phase).T; C = (x > 0); B = (1 - C); z = (x + 1j*y) - (4*C - 2)
+        r = np.sqrt(1 - np.abs(z**2))
+        return np.array([[C*(z   ) + B*(1j*r),       C*(1j*r    ) + B*(z)   ],
+                         [C*(1j*r) + B*(z.conj()),   C*(z.conj()) + B*(1j*r)]])
+
+    def dT(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        (x, y) = np.array(p_phase).T; C = (x > 0); B = (1 - C); x = x - (4*C - 2)
+        one = x*0j + 1
+        r = np.sqrt(1 - x**2 - y**2)
+        return np.array([[[C*(one    ) + B*(-1j*x/r),   C*(-1j*x/r) + B*(one    )],
+                          [C*(-1j*x/r) + B*(one    ),   C*(one    ) + B*(-1j*x/r)]],
+                         [[C*( 1j*one) + B*(-1j*y/r),   C*(-1j*y/r) + B*(1j*one )],
+                          [C*(-1j*y/r) + B*(-1j*one),   C*(-1j*one) + B*(-1j*y/r)]]])
+
+    def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
+        (a, b) = np.array(p_splitter) if np.iterable(p_splitter) else (p_splitter,)*2
+        if (ind == 'T1:'):
+            (T11, T12) = (T[0], T[1]); C = np.abs(T11) <= np.abs(T12); B = (1 - C)
+            T1abs = np.sqrt(T11.conj()*T11 + T12.conj()*T12 + 1e-15)
+            s = np.abs(T11)/T1abs * np.exp(1j*(np.angle(T11)-np.angle(-1j*T12))); s0 = np.sin(np.abs(a+b))
+            t = np.abs(T12)/T1abs * np.exp(1j*(np.angle(T12)-np.angle(-1j*T11))); t0 = np.sin(np.abs(a-b))
+            err = 1 * (C & (np.abs(s) < s0 - 1e-8)) | (B & (np.abs(t) < t0 - 1e-8))
+            s *= np.maximum(np.abs(s), s0)/(np.abs(s)+1e-30); t *= np.maximum(np.abs(t), t0)/(np.abs(t)+1e-30)
+            x = C*(s.real + 2) + B*(t.real - 2)
+            y = C*(s.imag    ) + B*(t.imag    )
+        else:
+            raise NotImplementedError(ind)  # TODO -- fill in the cases I'm too lazy to implement...
+        return ((x, y), err)

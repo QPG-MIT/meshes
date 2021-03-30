@@ -9,16 +9,17 @@
 #   11/16/19: Conceived SquareNet, wrote some scripts to do Reck / Clements / SquareNet decomposition (Note3/main.py).
 #   06/19/20: Made Reck / Clements code object-oriented using the MeshNetwork class.
 #   07/09/20: Made SquareNet subclass of MeshNetwork.  Custom crossings.  Converted from module to package.
-#   07/11/20: Custom crossings to Reck / Clements.  Reck / Clements decomposition in presence of imperfections.
+#   07/11/20: Custom crossings for Reck / Clements.  Reck / Clements decomposition in presence of imperfections.
 #   12/10/20: Added Ratio Method strategy for calibrating SquareNet and Reck.
 #   12/15/20: Extended Ratio Method to triangular and Clements meshes.
 #   12/19/20: Added MZICrossingSym and Direct Method for tuning triangular and Clements meshes.
-#   01/05/21: Added new Clements tuning method.
+#   01/05/21: Added new Clements tuning method (diagnoalization).
 #   03/03/21: Extended "new" (matrix diagonalization) method to Reck and general mesh shapes.
 #   03/06/21: Revamped SquareNet.  Added the triangular QR mesh.
 #   03/22/21: Created ButterflyNetwork class and added the local error correction routine errcorr_local
+#   03/29/21: Added CartesianCrossing class, crossing conversion utilities, tweaks to gradient function, Hessians.
 
-from .crossing import Crossing, MZICrossing
+from .crossing import Crossing, MZICrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
 from .reck import ReckNetwork
 from .clements import ClementsNetwork, SymClementsNetwork
