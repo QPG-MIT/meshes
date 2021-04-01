@@ -14,7 +14,6 @@
 #   03/29/21: Added utility to convert between crossing types.  Tweaks to gradient function.  Hessian support.
 
 
-import autograd.numpy as npa
 import numpy as np
 import warnings
 from typing import List, Any, Tuple, Callable
@@ -24,8 +23,8 @@ from .crossing import Crossing, MZICrossing, MZICrossingOutPhase
 # The base class MeshNetwork.
 
 class MeshNetwork:
-    p_phase: npa.array
-    p_splitter: npa.array
+    p_phase: np.array
+    p_splitter: np.array
 
     @property
     def L(self) -> int:
