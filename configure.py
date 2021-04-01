@@ -86,7 +86,7 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     if (m1 is None): m1 = IdentityNetwork(m2.N, X=m2.X.flip())
     if (m2 is None): m2 = IdentityNetwork(m1.N, X=m1.X.flip())
     assert isinstance(m1.X, MZICrossing) and isinstance(m2.X, MZICrossingOutPhase)
-    U = np.array(U, dtype=np.complex); N = m1.N; assert (U.shape == (N, N))
+    U = np.array(U, dtype=np.complex, order="C"); N = m1.N; assert (U.shape == (N, N))
     # (V0)* V and W (W0)*, where V0 is ideal, V is with real components.  Goal: match U = V*W
     VdV = np.eye(N, dtype=np.complex); WWd = np.eye(N, dtype=np.complex); Z = np.eye(N, dtype=np.complex)
     p = []; ind = []; c = []
@@ -157,6 +157,7 @@ def direct(m: StructuredMeshNetwork, U: np.ndarray, diag: str, dk_max=1):
     assert (diag == 'down') and (m.phi_pos == 'in')
     assert isinstance(m.X, MZICrossingOutPhase)
     N = len(U); Upost = np.eye(N, dtype=np.complex); assert U.shape == (N, N)
+    if np.isfortran(U): U = np.array(U, order="C")
 
     # Divide mesh into diagonals.  Make sure each diagonal can be uniquely targeted with a certain input waveguide.
     pos = np.concatenate([[[i, j, 2*j+j0, i-(2*j+j0)] for j in range(m.lens[i])] for (i, j0) in enumerate(m.shifts)])
