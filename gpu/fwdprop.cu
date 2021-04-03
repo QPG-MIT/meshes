@@ -5,25 +5,33 @@
 // preprocessor directives:
 //   K  [int] = size/32.  Each thread manages 2*K waveguides.
 //   L0 [int] = number of layers natively supported.  Limited by smem.  If L > L0, the propagation is broken into steps.
+//   nL [int] = a total of nL*L0 shifts/lens are pre-loaded.  Tradeoff between smem space and gmem latency.
 //   fname    = name of function (should be fwdprop_N[64*K])
 //
 // History:
 //   04/03/21: Created this file.  First working CUDA code.
 
 
-__global__ void fname(float *p, float *s, complex64 *in, complex64 *out, int ldu, int ldp, int lds, int L, int B)
+__global__ void fname(int N, int L, int B, 
+                      int *lens, int *shifts, 
+                      float *p, int ldp, 
+                      float *s, int lds, 
+                      complex64 *u_in, int ld_in,
+                      complex64 *u_out, int ld_out)
 {
 	// There are blockDim.y warps in each block (blockDim.x = 32).  Each references a separate instance.
 	// The blocks are therefore offset by blockDim.y instances, i.e. a pointer offset of ld * blockDim.y
 	// Kernel doesn't support multiplexing over p, s.  This is assumed to be easier by calling separate kernels.
-	in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
-	out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+	u_in  += ld_in * (blockDim.y*blockIdx.x + threadIdx.y);
+	u_out += ld_out * (blockDim.y*blockIdx.x + threadIdx.y);
     // Number of active warps (this block's mini-batch).
     int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);
 		
 	// Transfer matrices.
 	// The b^th matrix of column c goes in T[c][b/K][4(b%K):4(b%K)+4].  TODO: Offset to avoid bank conflicts?
 	__shared__ complex64 T[L0][32][4*K+smem_offset];   // 0 -> 1 for offset.
+    __shared__ int shifts_cache[nL*L0];
+    __shared__ int lens_cache[nL*L0];
 	// State.  The i^th waveguide is u[i%K] of thread i/K.
 	complex64 u[2*K];
 	
@@ -62,7 +70,9 @@ __global__ void fname(float *p, float *s, complex64 *in, complex64 *out, int ldu
         int l = threadIdx.y - i;
 		if (0 <= l && l < 2*L0 && threadIdx.y < b)
 			for (int k = 0; k < 2*K; k++)
-				T[(l/2)%L0][threadIdx.x][k+2*K*(l%2)] = in[32*k + threadIdx.x];
+            {
+                T[(l/2)%L0][threadIdx.x][k+2*K*(l%2)] = (32*k + threadIdx.x < N) ? u_in[32*k + threadIdx.x] : 0;
+            }
         __syncthreads();
 		if (0 <= l && l < 2*L0)
 			for (int k = 0; k < 2*K; k++)
@@ -79,6 +89,39 @@ __global__ void fname(float *p, float *s, complex64 *in, complex64 *out, int ldu
     {
         // Number of layers in *this* block.  Normally L0, except if last block is truncated.
         int L_blk = (L0 < L-x) ? L0 : L-x;
+        
+        // Every L0*nL layers, reload the cache of shifts and lengths.  This is done less frequently than the
+        // (p, s) updates because there's less data to load, so the cache can store more layers.  More importantly,
+        // the (p, s) updates rely on the shifts and lengths (i.e. to only load certain regions); doing these
+        // updates less frequently reduces memory latency.
+        /*
+        for (L0, nL, bd_y) in zip([36,20,14,11,7,5,4,2], [8,8,16,16,32,32,32,32], [8,10,15,18,26,20,16,12]):
+            L = 1024; shifts = np.arange(L); shifts_cache = np.repeat(-1, [nL*L0]); shifts_cache_list = []
+            for x in range(0, L, L0):
+                if (x % (L0*nL) == 0):
+                    for i in range(0, L0*nL, 32*bd_y):
+                        for tix_y in range(bd_y):
+                            for tix_x in range(32):
+                                idx = i + 32*tix_y + tix_x
+                                if (idx < L0*nL and x + idx < L):
+                                    shifts_cache[idx] = shifts[x + idx]
+                    shifts_cache_list.append(np.array(shifts_cache))
+                    shifts_cache[:] = -1
+            print ((np.concatenate(shifts_cache_list)[:len(shifts)] == shifts).all())        
+        */
+        if (x % (L0*nL) == 0)
+        {
+            for (int i = 0; i < L0*nL; i += 32*blockDim.y)
+            {
+                int id = i + 32*threadIdx.y + threadIdx.x;
+                if (id < L0*nL && x + id < L)
+                {
+                    lens_cache[id]   = lens[x + id];
+                    shifts_cache[id] = shifts[x + id];
+                }
+            }
+            __syncthreads();
+        }
         
         // Load T (coalesced in gmem, strided in smem).
         // Python code that checks this (for debugging):
@@ -115,7 +158,12 @@ __global__ void fname(float *p, float *s, complex64 *in, complex64 *out, int ldu
             {
                 int dm = (m*32 + threadIdx.x);
                 int idx_p = ldp*l + 2*dm, idx_s = lds*l + 2*dm;
-                Tij_mzi(&p[idx_p], &s[idx_s], &T[l][dm/K][4*(dm%K)]);
+                Tij_identity(&T[l][dm/K][4*(dm%K)]);
+                if (dm >= shifts_cache[(x+l) % (L0*nL)]/2 &&
+                    dm <  shifts_cache[(x+l) % (L0*nL)]/2 + lens_cache[(x+l) % (L0*nL)])
+                {
+                    Tij_mzi(&p[idx_p], &s[idx_s], &T[l][dm/K][4*(dm%K)]);
+                }
             }
         }
         __syncthreads();
@@ -124,7 +172,7 @@ __global__ void fname(float *p, float *s, complex64 *in, complex64 *out, int ldu
         for (int l = 0; l < L_blk; l++)
         {
             complex64 temp, u_2k;
-            if ((x+l) % 2)
+            if (shifts_cache[(x+l) % (L0*nL)] % 2) //((x+l) % 2)
             {
                 // Couple (u[1], u[2]), (u[3], u[4]), ... (u[2K-3], u[2K-2]).
                 for (int i = 0; i < K-1; i++)
@@ -171,11 +219,13 @@ __global__ void fname(float *p, float *s, complex64 *in, complex64 *out, int ldu
         __syncthreads();
         if (0 <= l && l < 2*L0 && threadIdx.y < b)
 			for (int k = 0; k < 2*K; k++)
-				out[32*k + threadIdx.x] = T[(l/2)%L0][threadIdx.x][k+2*K*(l%2)];
+                if (32*k + threadIdx.x < N)
+                    u_out[32*k + threadIdx.x] = T[(l/2)%L0][threadIdx.x][k+2*K*(l%2)];
 		__syncthreads();
 	}
 }
 
 #undef K
 #undef L0
+#undef nL
 #undef fname

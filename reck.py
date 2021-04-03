@@ -44,7 +44,7 @@ class ReckNetwork(StructuredMeshNetwork):
         shifts = list(range(N-2, 0, -1)) + list(range(0, N-1, 1))
         lens = ((N-np.array(shifts))//2).tolist()
         p_splitter = np.array(p_splitter); assert p_splitter.shape in [(), (N*(N-1)//2, X.n_splitter)]
-        if (method is None):
+        if (method is None or M is None):
             if (M is None):
                 # Initialize from parameters.  Check parameters first.
                 p_crossing = p_crossing * np.ones([N*(N-1)//2, X.n_phase]); phi_out = phi_out * np.ones(N)

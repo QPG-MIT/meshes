@@ -17,39 +17,50 @@ from cupy_backends.cuda.api.driver import CUDADriverError
 
 
 print ("Loading module.")
-mod = cp.RawModule(path="/home/rhamerly/PNP/meshprop.cubin")
+mod = cp.RawModule(path="meshprop.cubin")
 
 
 # Step 1: Accuracy Test.
-# TODO: make this more comprehensive, looking at a range of K, L, B, Nwarp.
-
-(K, L, B) = (4, 20, 64); Nwarp = 30; Nblk = int(np.ceil(B/Nwarp))
-print (f"Accuracy Test: N={32*K}, L={L}, B={B}, Nwarp={Nwarp}...", end="")
-# Inputs.
-p = np.random.randn(L, 32*K, 2).astype(np.float32)
-s = np.random.randn(L, 32*K, 2).astype(np.float32)
-ldp = lds = 2*(32*K); ldu = 2*(32*K)
-u_in = np.random.randn(B, 32*2*K, 2).dot([1, 1j]).astype(np.complex64); u = u_in
-# GPU code.
-func = mod.get_function(f"fwdprop_N{64*K}")
-p_d = cp.asarray(p); s_d = cp.asarray(s); in_d = cp.asarray(u_in); out_d = cp.asarray(u_in*0)
-func((Nblk,), (32,Nwarp), (p_d, s_d, in_d, out_d, cp.int32(ldu), cp.int32(ldp), cp.int32(lds), cp.int32(L), cp.int32(B)))
-u_out = out_d.get()
-# CPU code for comparison.
-def Tij_cpu(p, s):
-    (theta, phi) = p.T; beta = s.T
-    (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1], theta/2]]
-    return np.exp(1j*theta/2) * np.array([[np.exp(1j*phi) * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
-                                          [np.exp(1j*phi) * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
-for i in range(L):
-    if (i % 2): M = block_diag(np.eye(1), *Tij_cpu(p[i], s[i]).transpose(2, 0, 1)[:-1], np.eye(1))
-    else:       M = block_diag(*Tij_cpu(p[i], s[i]).transpose(2, 0, 1))
-    u = u.dot(M.T)
-# Error evaluation.
-err = np.linalg.norm(u_out-u, axis=1) / np.linalg.norm(u, axis=1)
-if ((err < 1e-4).all()): print("Success.")
-else: print(f"FAIL!  {(err < 1e-4).sum()}/{len(err)} had relative error > 1e-4."); print("err = ", err)
-
+# Runs a bunch of parameters, checks GPU result against block-diagonal matrix multiplication.
+# Randomly varies N, L, B, nWarp, shifts, lens.
+for moo in range(20):
+    (K, L, B) = (4, np.random.randint(4, 21), np.random.randint(4, 41)); 
+    N = np.random.randint(128, 256+1); Nwarp = np.random.randint(2, 31); Nblk = int(np.ceil(B/Nwarp))
+    print (f"Accuracy Test: N={N}, L={L:2d}, B={B:2d}, Nwarp={Nwarp:2d}...", end="")
+    # Inputs.
+    p = np.random.randn(L, N//2, 2).astype(np.float32)
+    s = np.random.randn(L, N//2, 2).astype(np.float32)
+    ldp = lds = 2*p.shape[1]; ldu = N
+    u_in = np.random.randn(B, N, 2).dot([1, 1j]).astype(np.complex64); u = u_in
+    shifts = np.random.randint([N-1]*L); lens = np.random.randint((N-shifts)//2)   # Random splitter placement.
+    # GPU code.
+    func = mod.get_function(f"fwdprop_N{64*K}")
+    shifts_d = cp.asarray(shifts, dtype=cp.int32); lens_d = cp.asarray(lens, dtype=cp.int32)
+    p_d = cp.asarray(p); s_d = cp.asarray(s); in_d = cp.asarray(u_in); out_d = cp.asarray(u_in*0)
+    func((Nblk,), (32,Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B),
+                               lens_d, shifts_d,
+                               p_d, cp.int32(ldp), s_d, cp.int32(lds),
+                               in_d, cp.int32(ldu), out_d, cp.int32(ldu)))
+    u_out = out_d.get()
+    # CPU code for comparison.
+    def Tij_cpu(p, s):
+        (theta, phi) = p.T; beta = s.T
+        (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1], theta/2]]
+        return np.exp(1j*theta/2) * np.array([[np.exp(1j*phi) * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
+                                              [np.exp(1j*phi) * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
+    for i in range(L):
+        mats_i = Tij_cpu(p[i], s[i]).transpose(2, 0, 1)
+        M = block_diag(np.eye(shifts[i]), *mats_i[shifts[i]//2:shifts[i]//2+lens[i]], np.eye(N-shifts[i]-2*lens[i]))
+        u = u.dot(M.T)
+    # Error evaluation.
+    err = np.linalg.norm(u_out-u, axis=1) / np.linalg.norm(u, axis=1)
+    errT = np.linalg.norm(u_out-u, axis=0) / np.linalg.norm(u, axis=0)
+    if ((err < 1e-4).all()): print("Success.")
+    else: 
+        print(f"FAIL!  {(err < 1e-4).sum()}/{len(err)} had relative error > 1e-4."); 
+        print("err/batch = \n", err)
+        print("err/ind   = \n", errT)
+        print("bds       = \n", np.array([shifts, shifts+2*lens]).T)
 
     
 # Step 2: Speed Test.
@@ -62,14 +73,17 @@ def timetest(N, L, B, Nwarp):
     func = mod.get_function(f"fwdprop_N{N}")
     p_d = cp.random.randn(L, 32*K, 2, dtype=np.float32); s_d = cp.random.randn(L, 32*K, 2, dtype=np.float32)
     in_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
+    shifts_d = cp.arange(L, dtype=cp.int32) % 2; lens_d = (32*K) - shifts_d;
     out_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
     ldp = 2*(32*K); ldu = 2*(32*K)
     t = 0; ct = 1
     while (t < 1e-2):
         cp.cuda.runtime.deviceSynchronize(); t = time()
         for i in range(ct):
-            func((Nblk,), (32,Nwarp), (p_d, s_d, in_d, out_d, cp.int32(ldu), cp.int32(ldp), 
-                                       cp.int32(ldp), cp.int32(L), cp.int32(B)))
+            func((Nblk,), (32,Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B),
+                                       lens_d, shifts_d,
+                                       p_d, cp.int32(ldp), s_d, cp.int32(lds),
+                                       in_d, cp.int32(ldu), out_d, cp.int32(ldu)))
         cp.cuda.runtime.deviceSynchronize(); t = time() - t; ct *= 2
     return t / (ct/2)
 
