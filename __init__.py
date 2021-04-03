@@ -6,6 +6,7 @@
 # implemented.
 #
 # History
+#   12/12/18: First attempt at GPU code for mesh propagation.  Fast but not very extensible, soon abandoned.
 #   11/16/19: Conceived SquareNet, wrote some scripts to do Reck / Clements / SquareNet decomposition (Note3/main.py).
 #   06/19/20: Made Reck / Clements code object-oriented using the MeshNetwork class.
 #   07/09/20: Made SquareNet subclass of MeshNetwork.  Custom crossings.  Converted from module to package.
@@ -18,6 +19,7 @@
 #   03/06/21: Revamped SquareNet.  Added the triangular QR mesh.
 #   03/22/21: Created ButterflyNetwork class and added the local error correction routine errcorr_local
 #   03/29/21: Added CartesianCrossing class, crossing conversion utilities, tweaks to gradient function, Hessians.
+#   04/03/21: First working CUDA code for mesh propagation.
 
 from .crossing import Crossing, MZICrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
