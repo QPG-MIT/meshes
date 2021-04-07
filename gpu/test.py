@@ -6,6 +6,7 @@
 # History:
 #   04/03/21: Created this file.
 #   04/05/21: Added support for forward differentiation.
+#   04/06/21: Reverse differentiation and CPU timing comparison.
 
 
 import numpy as np
@@ -17,34 +18,37 @@ import sys
 from cupy_backends.cuda.api.driver import CUDADriverError
 
 
-print ("Loading module.\n")
-mod = cp.RawModule(path="meshprop.cubin")
-
 # Command line options.
 acc   = ('-a'  in sys.argv)
 speed = ('-s'  in sys.argv)
 inf   = ('inf' in sys.argv)
 fd    = ('fd'  in sys.argv)
 bd    = ('bd'  in sys.argv)
-if (not (acc or speed) or not (inf or fd or bd)):
-    print ("Usage: python test.py [-a] [-s] [inf] [fwd] [rev]")
+cpu   = ('cpu' in sys.argv)
+if (not (acc or speed) or not (inf or fd or bd or cpu)):
+    print ("Usage: python test.py [-a] [-s] [inf] [fwd] [rev] [cpu]")
     print ("[-a] Test accuracy.")
     print ("[-s] Test speed.")
     print ("[inf] Test inference function.")
-    print ("[fwd] Test forward error propagation.")
-    print ("[rev] Test error back-propagation (not supported yet).")
+    print ("[fd]  Test forward error propagation.")
+    print ("[bd] Test error back-propagation (not supported yet).")
     exit()
 
+if (inf or fd or bd):
+    print ("Loading module.\n")
+    mod = cp.RawModule(path="meshprop.cubin")
+    
 # Step 1: Accuracy Test.
 # Runs a bunch of parameters, checks GPU result against block-diagonal matrix multiplication.
 # Randomly varies N, L, B, nWarp, shifts, lens.
 def test_fwd_acc(diff=False):
-    print ("Testing function: " + ("fwddiff_N256" if diff else "fwdprop_N256"))
+    print ("Accuracy Test: " + ("fwddiff_N256" if diff else "fwdprop_N256"))
+    print ("--------------------------------------")
     for moo in range(20):
         (K, L, B) = (4, np.random.randint(4, 21), np.random.randint(4, 41)); 
         fname = (f"fwddiff_N{64*K}" if diff else f"fwdprop_N{64*K}")
         N = np.random.randint(128, 256+1); Nwarp = np.random.randint(2, 25 if diff else 31); Nblk = int(np.ceil(B/Nwarp))
-        print (f"Accuracy Test: N={N}, L={L:2d}, B={B:2d}, Nwarp={Nwarp:2d}...", end="")
+        print (f"N={N}, L={L:2d}, B={B:2d}, Nwarp={Nwarp:2d}...", end="")
         # Inputs.
         (p, dp, s) = np.random.randn(3, L, N//2, 2)
         (u_in, du_in) = np.random.randn(2, B, N, 2).dot([1, 1j])
@@ -98,13 +102,64 @@ def test_fwd_acc(diff=False):
             print("[dp] err/batch = ", '[' + "".join(np.array(['.', '*'])[(d_err > 1e-4).astype(int)]) + ']')
             print("[dp] err/ind   = ", '[' + "".join(np.array(['.', '*'])[(d_errT > 1e-4).astype(int)]) + ']')
     print()
+    
+def test_rev_acc():
+    print ("Accuracy Test: backdiff_N256\n")
+    print ("--------------------------------------")
+    fwd = mod.get_function("fwdprop_N256")
+    rev = mod.get_function("backdiff_N256")
+    for moo in range(20):
+        (K, L, B) = (4, np.random.randint(4, 21), np.random.randint(4, 41)); 
+        N = np.random.randint(128, 256+1); Nwarp = np.random.randint(2, 29); Nblk = int(np.ceil(B/Nwarp))
+        print (f"N={N}, L={L:2d}, B={B:2d}, Nwarp={Nwarp:2d}...", end="")
+        shifts = np.random.randint([N-1]*L); lens = np.random.randint((N-shifts)//2)   # Random splitter placement.
+        (p, s) = np.random.randn(2, L, N//2, 2).astype(np.float32)
+        (u_in, u0) = np.random.randn(2, B, N, 2).dot([1, 1j]).astype(np.complex64)
+        ldp = lds = 2*p.shape[1]; ldu = N
+
+        # Send data to the GPU.
+        (p_d, s_d, u_in_d, u0_d, lens_d, shifts_d) = map(cp.asarray, (p, s, u_in, u0, lens, shifts))
+        u_out_d = cp.zeros(u_in_d.shape, dtype=cp.complex64); u_in2_d = cp.zeros(u_in_d.shape, dtype=cp.complex64)
+        dJdu_in_d = cp.zeros(u_in_d.shape, dtype=cp.complex64); dp_d = cp.zeros(p_d.shape, dtype=cp.float32)
+
+        # Fwd-propagate, get gradient, then back-propagate.
+        fwd((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, cp.int32(ldp), 
+                                   s_d, cp.int32(lds), u_in_d, cp.int32(ldu), u_out_d, cp.int32(ldu)))
+        dJdu_out_d = (u_out_d - u0_d)
+        rev((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, dp_d, cp.int32(ldp), 
+                                   s_d, cp.int32(lds), u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, cp.int32(ldu)))
+        (u_out, dJdu_out, u_in2, dJdu_in2, dp) = map(cp.asnumpy, (u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, dp_d))
+
+        # Error in back-propagated field.
+        err_uin = np.linalg.norm(u_in2 - u_in) / np.linalg.norm(u_in)
+        # Error in the gradient.
+        def numdiff(dp):
+            pp = (p + 1e-3*dp).astype(np.float32); pm = (p - 1e-3*dp).astype(np.float32)
+            (pp_d, pm_d, s_d, u_in_d, u0_d, lens_d, shifts_d) = map(cp.asarray, (pp, pm, s, u_in, u0, lens, shifts))
+            u_out_d = cp.zeros(u_in_d.shape, dtype=cp.complex64)
+            fwd((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, pp_d, cp.int32(ldp), 
+                                       s_d, cp.int32(lds), u_in_d, cp.int32(ldu), u_out_d, cp.int32(ldu)))
+            Jp = (cp.abs(u_out_d - u0_d)**2).sum().get()
+            fwd((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, pm_d, cp.int32(ldp), 
+                                       s_d, cp.int32(lds), u_in_d, cp.int32(ldu), u_out_d, cp.int32(ldu)))
+            Jm = (cp.abs(u_out_d - u0_d)**2).sum().get()
+            return (Jp - Jm) / 2e-3
+        errList = []
+        for i in range(50):
+            dp1 = np.random.randn(*dp.shape); errList.append(numdiff(dp1) / (dp * dp1).sum())
+        err_dp = np.abs(np.median(errList) - 1)
+
+        if (err_uin < 1e-4) and (err_dp < 1e-2): print ("Success.")
+        else: print (f"FAIL!  err[dJ/du_in]={err_uin:.2e}, err[dJ/dp]={err_dp:.2e}")
+    print()
 
 
 # Step 2: Speed Test.
 # Performance is a function of mesh size N, depth L, batch size B, and warps/block.  The latter
 # is a tuning parameter that must be swept.
 def test_fwd_speed(diff):
-    print ("Speed Test: N = 64, ..., 640.  Configurations: (N x N x N), (N x N x 4096).")
+    print ("Speed Test: " + ("fwddiff_N***" if diff else "fwdprop_N***"))
+    print ("--------------------------------------")
     def timetest(N, L, B, Nwarp):
         K = N//32
         Nblk = int(np.ceil(B/Nwarp))
@@ -137,7 +192,7 @@ def test_fwd_speed(diff):
     flops1 = np.zeros([8, 32])*np.nan; flops2 = np.zeros([8, 32])*np.nan
     wsList = np.zeros([2, 8], dtype=np.int)
 
-    print ("FwdProp Test: N x N x N")
+    print ("Square Matrices: N x N x N")
     Nlist = [64, 128, 192, 256, 320, 384, 512, 640]
     for (i, N) in enumerate(Nlist):
         print(f"N = {N:4d}: ", end="")
@@ -149,7 +204,7 @@ def test_fwd_speed(diff):
             flops1[i, j] = (3 if diff else 1) * (32 * (N*N*N/2) / t) / 1e9; print (".", end="", flush=True)
         j = np.argmax(np.nan_to_num(flops1[i])); wsList[0, i] = j+1
         print(f" {flops1[i,j]:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
-    print ("FwdProp Test: N x N x 4096")
+    print ("Fat Matrices: N x N x 4096")
     for (i, N) in enumerate(Nlist):
         print(f"N = {N:4d}: ", end="")
         for (j, ws) in enumerate(range(1, 33)):
@@ -160,8 +215,87 @@ def test_fwd_speed(diff):
             flops2[i, j] = (3 if diff else 1) * (32 * (N*N*4096/2) / t) / 1e9; print (".", end="", flush=True)
         j = np.argmax(np.nan_to_num(flops2[i])); wsList[1, i] = j+1
         print(f" {flops2[i,j]:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
+    print()
+
     np.savetxt("tuned_warpsize.txt", np.concatenate([np.array([Nlist]), wsList], axis=0).T, delimiter='\t', fmt='%d')
 
+    (f, (ax1, ax2)) = plt.subplots(1, 2, figsize=(9, 4.5), sharex=True, sharey=True)
+    (flops_mesh1, flops_mesh2) = ([], [])
+    for (ax, flops_i, flops_max_i) in zip([ax1, ax2], [flops1, flops2], [flops_mesh1, flops_mesh2]):
+        for (j, flops_ij) in enumerate(flops_i):
+            ax.plot(range(1, 33), flops_ij, '.-')
+        ax.plot([np.nan], 'o', mec='k', mfc='w')
+        for (j, flops_ij) in enumerate(flops_i):
+            k = np.argmax(np.nan_to_num(flops_ij))
+            ax.plot([k+1], [flops_ij[k]], 'o', mec='C'+str(j), mfc='w')
+            flops_max_i.append(flops_ij[k])
+        ax.set_xlim(-1, 33); ax.set_ylim(-20, 900); ax.grid()
+    ax2.legend(["N = " + str(Nlist[0])] + Nlist[1:], loc=4, ncol=2, framealpha=1)
+
+    ax1.set_xlabel(r"# Warps"); ax2.set_xlabel(r"# Warps"); ax1.set_ylabel("K40 Perf (GFLOP/s)")
+    ax1.set_title("N x N x N"); ax2.set_title("N x N x 4096")
+    plt.tight_layout()
+    plt.savefig("test-fig1.pdf", format="pdf")
+
+def test_rev_speed():
+    print ("Speed Test: backdiff_N***")
+    print ("--------------------------------------")
+    def timetest(N, L, B, Nwarp):
+        K = N//32
+        Nblk = int(np.ceil(B/Nwarp))
+        func = mod.get_function(f"backdiff_N{N}")
+        p_d = cp.random.randn(L, 32*K, 2, dtype=np.float32); s_d = cp.random.randn(L, 32*K, 2, dtype=np.float32)
+        u_out_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
+        dJdu_out_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
+        shifts_d = cp.arange(L, dtype=cp.int32) % 2; lens_d = (32*K) - shifts_d;
+        u_in_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
+        dJdu_in_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
+        dp_d = cp.random.randn(L, 32*K, 2, dtype=np.float32)
+
+        ldp = 2*(32*K); lds = ldp; ldu = 2*(32*K)
+        t = 0; ct = 1
+        while (t < 1e-2):
+            cp.cuda.runtime.deviceSynchronize(); t = time()
+            for i in range(ct):
+                func((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, 
+                                            p_d, dp_d, cp.int32(ldp), 
+                                            s_d, cp.int32(lds), 
+                                            u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu)))
+            cp.cuda.runtime.deviceSynchronize(); t = time() - t; ct *= 2
+        return t / (ct/2)
+
+    flops1 = np.zeros([8, 32])*np.nan; flops2 = np.zeros([8, 32])*np.nan
+    wsList = np.zeros([2, 8], dtype=np.int)
+
+    print ("Square Matrices: N x N x N")
+    Nlist = [64, 128, 192, 256, 320, 384, 512, 640]
+    for (i, N) in enumerate(Nlist):
+        print(f"N = {N:4d}: ", end="")
+        for (j, ws) in enumerate(range(1, 33)):
+            try:
+                t = timetest(N, N, N, ws); 
+            except CUDADriverError as e:
+                print ("x" + " "*(31-j), end=""); break
+            flops1[i, j] = 3 * (32 * (N*N*N/2) / t) / 1e9; print (".", end="", flush=True)
+        j = np.argmax(np.nan_to_num(flops1[i])); wsList[0, i] = j+1
+        print(f" {flops1[i,j]:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
+    print ("Fat Matrices: N x N x 4096")
+    for (i, N) in enumerate(Nlist):
+        print(f"N = {N:4d}: ", end="")
+        for (j, ws) in enumerate(range(1, 33)):
+            try:
+                t = timetest(N, N, 4096, ws); 
+            except CUDADriverError as e:
+                print ("x" + " "*(31-j), end=""); break
+            flops2[i, j] = 3 * (32 * (N*N*4096/2) / t) / 1e9; print (".", end="", flush=True)
+        j = np.argmax(np.nan_to_num(flops2[i])); wsList[1, i] = j+1
+        print(f" {flops2[i,j]:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
+    print()
+        
+    np.savetxt("tuned_warpsize.txt", np.concatenate([np.array([Nlist]), wsList], axis=0).T, delimiter='\t', fmt='%d')
+
+    return
+    
     (f, (ax1, ax2)) = plt.subplots(1, 2, figsize=(9, 4.5), sharex=True, sharey=True)
     (flops_mesh1, flops_mesh2) = ([], [])
     for (ax, flops_i, flops_max_i) in zip([ax1, ax2], [flops1, flops2], [flops_mesh1, flops_mesh2]):
@@ -181,18 +315,47 @@ def test_fwd_speed(diff):
     #plt.savefig("test-fig1.pdf", format="pdf")
 
 
+def test_cpu_speed():
+    import meshes as ms
+    print ("Speed Test: meshes/mesh.py (NumPy)")
+    print ("--------------------------------------")
+    def time_clem(N, B):
+        U = np.random.randn(N, B).astype(np.complex)
+        V = np.random.randn(N, B).astype(np.complex)
+        clem = ms.ClementsNetwork(N=N)
+        clem.p_splitter = np.random.randn(N*(N-1)//2, 2)
+        clem.p_phase[:] = np.random.randn(N**2)
 
+        t = time(); n = 0
+        while (time() - t < 0.2):
+            clem.dot(U); n += 1
+        t_inf = (time() - t)/n
+        t = time(); n = 0
+        while (time() - t < 0.2):
+            clem.grad_phi(U, V); n += 1
+        t_bd = (time() - t)/n - t_inf
+
+        flops_inf = 32 * (N*N*N/2); flops_bd = 3*flops_inf
+
+        return (t_inf, t_bd, flops_inf/t_inf/1e9, flops_bd/t_bd/1e9)
+
+    print ("Square Matrices: N x N x N")
+    for N in [64, 128, 192, 256, 320, 384, 512, 640]:
+        (t_inf, t_bd, flops_inf, flops_bd) = time_clem(N, N)
+        print (f"N = {N:3d}:   {flops_inf:.3f} GFLOP/s (fwdprop, t={t_inf:.1e}s) | " + 
+               f"{flops_bd:.3f} GFLOP/s (backprop, t={t_inf:.1e}s)")    
+
+        
+# Options
+if inf:
+    if acc:   test_fwd_acc(False)
+    if speed: test_fwd_speed(False)  
+if fd:
+    if acc:   test_fwd_acc(True)
+    if speed: test_fwd_speed(True)  
 if bd:
-    raise NotImplementedError()
-    
-if acc:
-    if inf:
-        test_fwd_acc(False)
-    if fd:
-        test_fwd_acc(True)
-
-if speed:
-    if inf:
-        test_fwd_speed(False) 
-    if fd:
-        test_fwd_speed(True) 
+    if acc:   test_rev_acc()
+    if speed: test_rev_speed()
+if cpu:
+    if acc:   raise NotImplementedError()
+    if speed: test_cpu_speed()

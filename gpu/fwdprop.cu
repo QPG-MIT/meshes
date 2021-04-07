@@ -16,20 +16,6 @@
 #define L_ker (L0*pack_T)  // Actual number of layers stored in the kernel = L0*pack_T (default L0, sym: 2*L0).
 #define L_preload (L0*nL)  // Number of shifts / lens pre-loaded.
 
-#ifdef is_matmult
-#else
-__device__ __inline__ void matmult(const complex64 T[4], complex64 &u1, complex64 &u2, complex64 &temp, bool cond)
-{
-    temp = T[0]*u1 + T[1]*u2;
-    u2   = T[2]*u1 + T[3]*u2;
-    if (cond)
-        u1 = temp;
-}
-#define is_matmult 1
-#endif
-
-
-
 __global__ void fname(int N, int L, int B, 
                       int *lens, int *shifts, 
                       float *p, int ldp, 
@@ -62,7 +48,7 @@ __global__ void fname(int N, int L, int B,
 	complex64 u[2*K];
 	
 	// Load u coalesced, gmem -> smem.  Macro defined in meshprop.cu.
-    load_u;
+    load_u(u, u_in);
 
 	for (int x = 0; x < L; x += L_ker)
     {
@@ -70,11 +56,10 @@ __global__ void fname(int N, int L, int B,
         int L_blk = (L_ker < L-x) ? L_ker : L-x;
 
         // Every L0*nL layers, reload the cache of shifts and lengths.  This is done less frequently than the
-        load_pos_cache;
+        load_pos_cache_fwd;
 
-        // Load T (coalesced in gmem, strided in smem).  
-        load_T(Tij_mzi(&p[idx_p], (float*) 0, &s[idx_s], &T[l/pack_T][dm/K][stride_T*(dm%K + K*(l%pack_T))], (complex64*) 0),
-               Tij_identity(&T[l][dm/K][4*(dm%K)], (complex64 *) 0));
+        // Load T (coalesced in gmem, strided in smem). 
+        load_T;
 
         // Iterate through L_blk layers.
         for (int l = 0; l < L_blk; l++)
@@ -107,7 +92,7 @@ __global__ void fname(int N, int L, int B,
     }
 
 	// Write data to output.  Same permutation as for input, but reversed.  Macro from meshprop.cu.
-    save_u;
+    save_u(u, u_out);
 }
 
 #undef L_ker

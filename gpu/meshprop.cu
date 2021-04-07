@@ -10,7 +10,8 @@
 // History
 //   12/12/18: First attempt at GPU code for mesh propagation.  Fast but not very extensible, soon abandoned.
 //   04/03/21: Created this package.  Similar to the 2018 code, but easier to modify and extend.  CuPy compatible.
-//   04/05/21: Add forward-differentiation routine.
+//   04/05/21: Add forward-mode differentiation routine.
+//   04/06/21: Added reverse-mode differentiation (backpropagation) routine.
 
 
 #include<cupy/complex.cuh>
@@ -18,142 +19,60 @@
 
 typedef complex<float> complex64;
 
+#include "crossing.cu"
+#include "shuffle.cu"
+
+
 extern "C" {
-	
-
-// Initializes T = [T11, T12, T21, T22] to given MZI settings (θ, φ) and imperfections (α, β).
-__device__ void Tij_mzi(const float *p, const float *dp, const float *s, complex64 T[4], complex64 dT[4])
-{
-	// cos(θ/2), sin(θ/2), cos(θ/2+φ), sin(θ/2+φ)
-	float C, S, C1, S1;
-	__sincosf(p[0]/2,      &S , &C );
-	__sincosf(p[0]/2+p[1], &S1, &C1);
-
-	// cos(α ± β), sin(α ± β)
-	float Cp, Sp, Cm, Sm;
-	__sincosf(s[0]+s[1],   &Sp, &Cp);
-	__sincosf(s[0]-s[1],   &Sm, &Cm);
-
-	// Equivalent Python code:
-    // (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1], theta/2]]
-    // T = np.exp(1j*theta/2) * np.array([[np.exp(1j*phi) * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
-    //                                    [np.exp(1j*phi) * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
-    T[0] = complex64(C1, S1) * complex64(-C*Sp,  S*Cm);
-    T[1] = complex64(C , S ) * complex64(-S*Sm,  C*Cp);
-    T[2] = complex64(C1, S1) * complex64( S*Sm,  C*Cp);
-    T[3] = complex64(C , S ) * complex64(-C*Sp, -S*Cm);
-
-    // Equivalent Python code:
-    // dT = (np.exp(1j*np.array([[[phi+theta, theta]]])) *
-    //       np.array([[[1j*(1j*S*Cm-C*Sp)+( 1j*C*Cm+S*Sp),   1j*( 1j*C*Cp-S*Sm)+(-1j*S*Cp-C*Sm)],
-    //                  [1j*(1j*C*Cp+S*Sm)+(-1j*S*Cp+C*Sm),   1j*(-1j*S*Cm-C*Sp)+(-1j*C*Cm+S*Sp)]],
-    //                 [[1j*(1j*S*Cm-C*Sp),                   0*S                               ],
-    //                  [1j*(1j*C*Cp+S*Sm),                   0*S                               ]]]))
-    if (dp)
-    {
-        dT[0] = complex64(C1, S1) * (0.5f * dp[0] * (Cm-Sp) * complex64(-S,  C) + dp[1] * complex64(-Cm*S, -C*Sp));
-        dT[1] = complex64(C , S ) * (0.5f * dp[0] * (Cp+Sm) * complex64(-C, -S));
-        dT[2] = complex64(C1, S1) * (0.5f * dp[0] * (Cp-Sm) * complex64(-C, -S) + dp[1] * complex64(-C*Cp,  S*Sm));
-        dT[3] = complex64(C , S ) * (0.5f * dp[0] * (Cm+Sp) * complex64( S, -C));
-    }
-}
-    
+	    
+/*
 __global__ void Tij_test(float *p, float *dp, float *s, complex64 *T, complex64 *dT)
 {
     int id = blockIdx.x * blockDim.x + threadIdx.x;
-    Tij_mzi(&p[2*id], &dp[2*id], &s[2*id], &T[4*id], &dT[4*id]);
+    Tij_mzi(&p[2*id], &dp[2*id], &s[2*id], &T[4*id], &dT[4*id], (float *) 0, true);
 }
     
-// Initializes an identity transfer matrix [[1, 0], [0, 1]].
-__device__ void Tij_identity(complex64 T[4], complex64 dT[4])
-{
-    T[0] = 1; T[1] = 0; T[2] = 0; T[3] = 1;
-    if (dT)
-    {
-        dT[0] = 0; dT[1] = 0; dT[2] = 0; dT[3] = 0;
-    }
-}
+*/
 
-// Warp shuffle functions for complex<float>, not implemented in native CUDA.
-__device__ complex64 __shfl_sync(unsigned int mask, complex64 src, int srcLane, int width)
+/*   
+__global__ void fwdprop_test(float *p, float *s, complex64 *u_in, complex64 *u_out, complex64 *T)
 {
-    return complex64(__shfl_sync(mask, src.real(), srcLane, width),
-                     __shfl_sync(mask, src.imag(), srcLane, width));
-}
-__device__ complex64 __shfl_up_sync(unsigned int mask, complex64 src, unsigned int delta, int width)
-{
-    return complex64(__shfl_up_sync(mask, src.real(), delta, width),
-                     __shfl_up_sync(mask, src.imag(), delta, width));
-}
-__device__ complex64 __shfl_down_sync(unsigned int mask, complex64 src, unsigned int delta, int width)
-{
-    return complex64(__shfl_down_sync(mask, src.real(), delta, width),
-                     __shfl_down_sync(mask, src.imag(), delta, width));
-}
-__device__ complex64 __shfl_xor_sync(unsigned int mask, complex64 src, int laneMask, int width)
-{
-    return complex64(__shfl_xor_sync(mask, src.real(), laneMask, width),
-                     __shfl_xor_sync(mask, src.imag(), laneMask, width));
-}
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    u_in += 2*id; u_out += 2*id; p += 2*id; s += 2*id; T += 4*id;
 
+    complex64 u1   = u_in[0], 
+              u2   = u_in[1], 
+              temp = 0;
+
+    Tij_mzi(p, (float *) 0, s, T, (complex64 *) 0, (float *) 0, true);
+    matmult(T, u1, u2, temp, true);
     
-// Forward propagation of fields and errors.
-//*
+    u_out[0] = u1;
+    u_out[1] = u2;
+}
+__global__ void backprop_test(float *p, float *dp, float *s, 
+                              complex64 *u_out, complex64 *dJdu_out,
+                              complex64 *u_in, complex64 *dJdu_in, complex64 *T, complex64 *dT)
+{
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    u_out += 2*id; dJdu_out += 2*id; 
+    u_in  += 2*id; dJdu_in  += 2*id; 
+    p += 2*id; dp += 2*id; s += 2*id; T += 4*id; dT += 4*id;
 
-#define K 1
-#define L0 18
-#define nL 16
-#define fname fwddiff_N64
-#include "fwddiff.cu"
-
-#define K 2
-#define L0 10
-#define nL 32
-#define fname fwddiff_N128
-#include "fwddiff.cu"
-
-#define K 3
-#define L0 7
-#define nL 32
-#define fname fwddiff_N192
-#include "fwddiff.cu"
-
-#define K 4
-#define L0 5
-#define nL 32
-#define fname fwddiff_N256
-#include "fwddiff.cu"
-
-#define K 5
-#define L0 4
-#define nL 32
-#define fname fwddiff_N320
-#include "fwddiff.cu"
-
-#define K 6
-#define L0 3
-#define nL 32
-#define fname fwddiff_N384
-#include "fwddiff.cu"
-
-#define K 8
-#define L0 2
-#define nL 32
-#define fname fwddiff_N512
-#include "fwddiff.cu"
-
-#define K 10
-#define L0 2
-#define nL 32
-#define fname fwddiff_N640
-#include "fwddiff.cu"
-
-//*/
-
-
+    complex64 u1    = u_out[0],     dJdu1 = dJdu_out[0],
+              u2    = u_out[1],     dJdu2 = dJdu_out[1],
+              temp  = 0;
     
-    
-// Forward propagation of fields, no error terms.
+    Tij_mzi(p, (float *) 0, s, T, dT, (float *) 0, false);  // Set up matrix.
+    matmult_bk(T, dT, u1, u2, dJdu1, dJdu2, temp, true);    // Back-propagate.
+    u_in[0] = u1; u_in[1] = u2;                             // Return fields u.
+    dJdu_in[0] = dJdu1; dJdu_in[1] = dJdu2;                 // Return gradients dJ/du.
+    dp_mzi(p, s, dT, dp);                                   // Return updates dJ/dp.
+}
+*/
+
+
+// Forward propagation of fields, no derivative terms.
 //*
 
 #define smem_offset 1
@@ -206,6 +125,114 @@ __device__ complex64 __shfl_xor_sync(unsigned int mask, complex64 src, int laneM
 #define fname fwdprop_N640
 #include "fwdprop.cu"
 //*/
+
+
+
+// Forward propagation of fields and gradients.
+//*
+
+#define K 1
+#define L0 18
+#define nL 16
+#define fname fwddiff_N64
+#include "fwddiff.cu"
+
+#define K 2
+#define L0 10
+#define nL 32
+#define fname fwddiff_N128
+#include "fwddiff.cu"
+
+#define K 3
+#define L0 7
+#define nL 32
+#define fname fwddiff_N192
+#include "fwddiff.cu"
+
+#define K 4
+#define L0 5
+#define nL 32
+#define fname fwddiff_N256
+#include "fwddiff.cu"
+
+#define K 5
+#define L0 4
+#define nL 32
+#define fname fwddiff_N320
+#include "fwddiff.cu"
+
+#define K 6
+#define L0 3
+#define nL 32
+#define fname fwddiff_N384
+#include "fwddiff.cu"
+
+#define K 8
+#define L0 2
+#define nL 32
+#define fname fwddiff_N512
+#include "fwddiff.cu"
+
+#define K 10
+#define L0 2
+#define nL 32
+#define fname fwddiff_N640
+#include "fwddiff.cu"
+//*/
+
+    
+    
+// Back-propagation of fields and gradients.
+//*
+#define K 1
+#define L0 15
+#define nL 9
+#define fname backdiff_N64
+#include "backdiff.cu"
+    
+#define K 2
+#define L0 8
+#define nL 12
+#define fname backdiff_N128
+#include "backdiff.cu"
+    
+#define K 3
+#define L0 5
+#define nL 12
+#define fname backdiff_N192
+#include "backdiff.cu"
+
+#define K 4
+#define L0 4
+#define nL 32
+#define fname backdiff_N256
+#include "backdiff.cu"
+
+#define K 5
+#define L0 3
+#define nL 48
+#define fname backdiff_N320
+#include "backdiff.cu"
+
+#define K 6
+#define L0 3
+#define nL 48
+#define fname backdiff_N384
+#include "backdiff.cu"
+
+#define K 8
+#define L0 2
+#define nL 48
+#define fname backdiff_N512
+#include "backdiff.cu"
+
+#define K 10
+#define L0 1
+#define nL 48
+#define fname backdiff_N640
+#include "backdiff.cu"
+//*/
+    
 
 // These might be too big to be useful.
 /*

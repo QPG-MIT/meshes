@@ -1,5 +1,5 @@
 # Meshes package.
-# Ryan Hamerly, 03/06/21
+# Ryan Hamerly, 04/06/21
 #
 # Implements the MeshNetwork class, which can be used for describing Reck and Clements meshes (or any other
 # beamsplitter mesh where couplings occur between neighboring waveguides).  Clements decomposition is also
@@ -20,6 +20,7 @@
 #   03/22/21: Created ButterflyNetwork class and added the local error correction routine errcorr_local
 #   03/29/21: Added CartesianCrossing class, crossing conversion utilities, tweaks to gradient function, Hessians.
 #   04/03/21: First working CUDA code for mesh propagation.
+#   04/06/21: Added forward- and reverse-mode differentiation to the CUDA code.
 
 from .crossing import Crossing, MZICrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork

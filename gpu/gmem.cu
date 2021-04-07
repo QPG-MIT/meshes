@@ -10,6 +10,7 @@
 // History:
 //   04/03/21: Implemented the algorithms in fwdprop.cu.
 //   04/05/21: Generalized code with macros, split off to gmem.cu.
+//   04/06/21: Added macros for back-propagation.
 
 
 // Load u coalesced, gmem -> smem.  Then reorder strided, smem -> regs.  (Direct gmem -> regs would be strided, poor BW).
@@ -84,19 +85,19 @@ for (int i = 0; i < b; i += pack_u*L0) \
 } \
 }
 // Loads u_in -> u.
-#define load_u \
+#define load_u(u, u_in) \
     load_generic(load_readcode(T, u_in, true), load_shflcode(T, u), u[k] = 0)
 // Loads u_in -> u, du_in -> du
-#define load_u_du \
+#define load_u_du(u, du, u_in, du_in) \
     load_generic( \
         load_readcode(T, u_in, true); load_readcode(dT, du_in, du_in), \
         load_shflcode(T, u); load_shflcode(dT, du), \
         u[k] = 0; du[k] = 0)
 // Saves u -> u_out.
-#define save_u \
+#define save_u(u, u_out) \
     save_generic(save_shflcode(T, u), save_writcode(T, u_out, true))
 // Saves u -> u_out, du -> du_out.
-#define save_u_du \
+#define save_u_du(u, du, u_out, du_out) \
     save_generic( \
         save_shflcode(T, u); save_shflcode(dT, du), \
         save_writcode(T, u_out, true); save_writcode(dT, du_out, du_out))
@@ -121,21 +122,22 @@ for (L0, nL, bd_y) in zip([36,20,14,11,7,5,4,2], [8,8,16,16,32,32,32,32], [8,10,
             shifts_cache[:] = -1
     print ((np.concatenate(shifts_cache_list)[:len(shifts)] == shifts).all())        
 */
-#define load_pos_cache { \
-if (x % L_preload == 0) \
-{ \
-    for (int i = 0; i < L_preload; i += 32*blockDim.y) \
+#define load_pos_cache(sign) \
+    if (x % L_preload == 0) \
     { \
-        int id = i + 32*threadIdx.y + threadIdx.x; \
-        if (id < L_preload && x + id < L) \
+        for (int i = 0; i < L_preload; i += 32*blockDim.y) \
         { \
-            lens_cache[id]   = lens[x + id]; \
-            shifts_cache[id] = shifts[x + id]; \
+            int id = i + 32*threadIdx.y + threadIdx.x; \
+            if (id < L_preload && x + id < L) \
+            { \
+                lens_cache[id]   = lens[sign*(x + id)]; \
+                shifts_cache[id] = shifts[sign*(x + id)]; \
+            } \
         } \
-    } \
-    __syncthreads(); \
-} \
-}
+        __syncthreads(); \
+    }
+#define load_pos_cache_fwd load_pos_cache(+1)
+#define load_pos_cache_rev load_pos_cache(-1)
 
 // Load T (coalesced in gmem, strided in smem).
 // Python code that checks this (for debugging):
@@ -165,7 +167,14 @@ for i in range(0, K*L, B):
                                                           s[idx_s], s[idx_s+1])
 (T.reshape(L*32*K, 4) == np.array([p[::2], p[1::2], s[::2], s[1::2]]).T).all()
 */
-#define load_T(code_in, code_out) { \
+
+#define i1_T (l/pack_T)
+#define i1_P (l/pack_P)
+#define i2_T (dm/K)
+#define i3_T (stride_T*(dm%K + K*(l%pack_T)))
+#define i3_P (stride_P*(dm%K + K*(l%pack_P)))
+
+#define matrix_io(code_in, code_out) { \
 for (int i = 0; i < K*L_ker; i += blockDim.y) \
 { \
     int l = (i + threadIdx.y)/K, m = (i + threadIdx.y)%K; \
@@ -187,3 +196,31 @@ for (int i = 0; i < K*L_ker; i += blockDim.y) \
 __syncthreads(); \
 }
 
+// Loads matrix T
+#define load_T \
+    matrix_io(Tij_mzi(&p[idx_p], (float*) 0, &s[idx_s], \
+                        &T[i1_T][i2_T][i3_T], (complex64 *) 0, (float*) 0, false), \
+                Tij_identity(&T[i1_T][i2_T][i3_T], (complex64 *) 0));
+// Loads matrix T and its differential dT.
+#define load_T_dT \
+    matrix_io(Tij_mzi(&p[idx_p], &dp[idx_p], &s[idx_s], \
+                        &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], (float *) 0, true), \
+                Tij_identity(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]));
+
+// NOTE: for packed symmetric matrices (pack_T=2), only works if ps_cache can be packed as well (no s data stored),
+// so that stride_T = 2, stride_P = 2.  I think.  Maybe more general if you define these at compile time.
+#define load_T_dT_bk \
+    matrix_io(Tij_mzi(&p[idx_p], &dp[idx_p], &s[idx_s], \
+                        &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], &ps_cache[i1_P][i2_T][i3_P], false), \
+              Tij_identity(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]));
+
+// TODO: once this works, switch out &p[idx_p] -> ps_cache[][][i3_P], &s[idx_s] -> ps_cache[][][i3_P+2] for
+// better performance.
+//#define save_dp \
+//    matrix_io(dp_mzi(&p[idx_p], &s[idx_s], &dT[i1_T][i2_T][i3_T], &dp[idx_p]), )
+#define save_dp \
+    matrix_io(dp_mzi(&ps_cache[i1_P][i2_T][i3_P], &ps_cache[i1_P][i2_T][i3_P+2], &dT[i1_T][i2_T][i3_T], &dp[idx_p]), )
+
+//#undef i1_T
+//#undef i2_T
+//#undef i3_T
