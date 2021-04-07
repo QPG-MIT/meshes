@@ -9,8 +9,9 @@
 #   07/09/20: Created this file.  Defined classes Crossing, MZICrossing.
 #   07/10/20: Added clemshift() functionality (convert T(p)* psi -> psi' T(p') for Clements decomposition).
 #   12/10/20: Added MZICrossingOutPhase with phase shifter on the lower output.
-#   12/20/20: Added MZICrossingSym (symmetric +theta / -theta pairing)
+#   12/20/20: Added MZICrossingSym (symmetric +theta / -theta pairing).
 #   03/29/21: Added CartesianCrossing (non-singular parameterization) and crossing conversion utility.
+#   04/07/21: Slight speedup using numpy.einsum for dot(), rdot(), grad().
 
 import numpy as np
 from typing import Any, Tuple
@@ -109,7 +110,8 @@ class Crossing:
         if (x.ndim == 1):
             return self.dot(p_phase, p_splitter, np.outer(x, 1))[:, 0]
         (m, n) = x.shape; T = (self.Tdag if dag else self.T)(p_phase, p_splitter).reshape([2,2,m//2]).transpose((2,0,1))
-        return (T.reshape(T.shape + (1,)) * x.reshape([m//2, 1, 2, n])).sum(axis=2).reshape(x.shape)
+        return np.einsum('ijk,ikl->ijl', T, x.reshape([m//2, 2, n])).reshape(x.shape)
+
 
     def rdot(self, p_phase, p_splitter, y, dag=False) -> np.ndarray:
         r"""
@@ -123,7 +125,7 @@ class Crossing:
         if (y.ndim == 1):
             return self.rdot(p_phase, p_splitter, np.outer(1, y))[0, :]
         (m, n) = y.shape; T = (self.Tdag if dag else self.T)(p_phase, p_splitter).reshape([2,2,n//2]).transpose((2,0,1))
-        return (T.reshape((1,) + T.shape) * y.reshape([m, n//2, 2, 1])).sum(axis=2).reshape(y.shape)
+        return np.einsum('ijk,jkl->ijl', y.reshape([m, n//2, 2]), T).reshape(y.shape)
 
     def grad(self, p_phase, p_splitter, x, gradY) -> np.ndarray:
         r"""
@@ -138,7 +140,7 @@ class Crossing:
         (r, k, m, n) = dT.shape; q = x.shape[1]
         x = x.reshape((k, n, q)); gradY = gradY.reshape((k, m, q))
         dTx = (dT.reshape((r, k, m, n, 1)) * x.reshape((1, k, 1, n, q))).sum(axis=3)
-        return np.real(gradY.reshape((1, k, m, q)) * dTx.conj()).sum(axis=(2, 3)).T
+        return np.real(np.einsum('jkl,ijkl->ji', gradY, dTx.conj()))
         # Gotta love the index manipulation lol
 
     def convert(self,
