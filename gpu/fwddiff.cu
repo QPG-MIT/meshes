@@ -39,11 +39,11 @@ __global__ void fname(int N, int L, int B,
     
 		
 	// Transfer matrices.
-	// The b^th matrix of column c goes in T[c][b/K][4(b%K):4(b%K)+4].  TODO: Offset to avoid bank conflicts?
-	__shared__ complex64 T[L0][32][4*K+1];
-	__shared__ complex64 dT[L0][32][4*K+1];
-    __shared__ int shifts_cache[nL*L0];
-    __shared__ int lens_cache[nL*L0];
+	// The b^th matrix of column c goes in T[c][4(b%K):4(b%K)+4][b/K].
+	__shared__ complex64 T[L0][4*K][32];
+	__shared__ complex64 dT[L0][4*K][32];
+    __shared__ int shifts_cache[L_preload];
+    __shared__ int lens_cache[L_preload];
     
 	// State.  The i^th waveguide is u[i%K] of thread i/K.
 	complex64 u[2*K];
@@ -71,11 +71,11 @@ __global__ void fname(int N, int L, int B,
             {
                 // Couple (u[1], u[2]), (u[3], u[4]), ... (u[2K-3], u[2K-2]).
                 for (int i = 0; i < K-1; i++)
-                    matmult_d(&T[l][threadIdx.x][4*i], &dT[l][threadIdx.x][4*i], 
+                    matmult_d(&T[l][4*i][threadIdx.x], &dT[l][4*i][threadIdx.x], 
                               u[2*i+1], u[2*i+2], du[2*i+1], du[2*i+2], temp, true);
                 // Couple (u[2K-1], u[0]).  The latter comes from the next thread up.  Warp shuffle.
                 u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); du_2k = __shfl_down_sync(0xffffffffu, du[0], 1, 32);
-                matmult_d(&T[l][threadIdx.x][4*K-4], &dT[l][threadIdx.x][4*K-4], 
+                matmult_d(&T[l][4*K-4][threadIdx.x], &dT[l][4*K-4][threadIdx.x], 
                           u[2*K-1], u_2k, du[2*K-1], du_2k, temp, threadIdx.x != 31);
                 u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); du_2k = __shfl_up_sync(0xffffffffu, du_2k, 1, 32);
                 if (threadIdx.x)
@@ -88,7 +88,7 @@ __global__ void fname(int N, int L, int B,
             {
                 // Easy case!  Couple (u[0], u[1]), (u[2], u[3]), ... (u[2K-2], u[2K-1]).
                 for (int i = 0; i < K; i++)
-                    matmult_d(&T[l][threadIdx.x][4*i], &dT[l][threadIdx.x][4*i], 
+                    matmult_d(&T[l][4*i][threadIdx.x], &dT[l][4*i][threadIdx.x], 
                               u[2*i], u[2*i+1], du[2*i], du[2*i+1], temp, true);
             }
         }

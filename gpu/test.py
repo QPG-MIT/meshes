@@ -104,7 +104,7 @@ def test_fwd_acc(diff=False):
     print()
     
 def test_rev_acc():
-    print ("Accuracy Test: backdiff_N256\n")
+    print ("Accuracy Test: backdiff_N256")
     print ("--------------------------------------")
     fwd = mod.get_function("fwdprop_N256")
     rev = mod.get_function("backdiff_N256")

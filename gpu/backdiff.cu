@@ -25,8 +25,6 @@ __global__ void fname(int N, int L, int B,
     const int pack_u = 2; // Packing factor = T.shape[2]/2 (default 2)
     const int pack_T = 1; // Packing factor 4 / (# T params) (default: 1, symmetric Tij: 2)
     const int stride_T = 4 / pack_T;
-    const int pack_P = 1;
-    const int stride_P = 4 / pack_P;
 
     // There are blockDim.y warps in each block (blockDim.x = 32).  Each references a separate instance.
 	// The blocks are therefore offset by blockDim.y instances, i.e. a pointer offset of ld * blockDim.y
@@ -50,10 +48,9 @@ __global__ void fname(int N, int L, int B,
     lds    *= -1;
 		
 	// Transfer matrices.
-	// The b^th matrix of column c goes in T[c][b/K][4(b%K):4(b%K)+4].  TODO: Offset to avoid bank conflicts?
-	__shared__ complex64 T[L0][32][4*K+1];
-	__shared__ complex64 dT[L0][32][4*K+1];
-    __shared__ float ps_cache[L0][32][4*K+1];
+	// The b^th matrix of column c goes in T[c][4(b%K):4(b%K)+4][b/K].
+	__shared__ complex64 T[L0][4*K][32];
+	__shared__ complex64 dT[L0][4*K][32];
     __shared__ int shifts_cache[L_preload];
     __shared__ int lens_cache[L_preload];
     
@@ -85,11 +82,11 @@ __global__ void fname(int N, int L, int B,
                 {
                     // Couple (u[1], u[2]), (u[3], u[4]), ... (u[2K-3], u[2K-2]).
                     for (int i = 0; i < K-1; i++)
-                        matmult_bk(&T[l][threadIdx.x][4*i], &dT[l][threadIdx.x][4*i], 
+                        matmult_bk(&T[l][4*i][threadIdx.x], &dT[l][4*i][threadIdx.x], 
                                    u[2*i+1], u[2*i+2], dJdu[2*i+1], dJdu[2*i+2], temp, true);
                     // Couple (u[2K-1], u[0]).  The latter comes from the next thread up.  Warp shuffle.
                     u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); dJdu_2k = __shfl_down_sync(0xffffffffu, dJdu[0], 1, 32);
-                    matmult_bk(&T[l][threadIdx.x][4*K-4], &dT[l][threadIdx.x][4*K-4], 
+                    matmult_bk(&T[l][4*K-4][threadIdx.x], &dT[l][4*K-4][threadIdx.x], 
                                u[2*K-1], u_2k, dJdu[2*K-1], dJdu_2k, temp, threadIdx.x != 31);
                     u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); dJdu_2k = __shfl_up_sync(0xffffffffu, dJdu_2k, 1, 32);
                     if (threadIdx.x)
@@ -102,7 +99,7 @@ __global__ void fname(int N, int L, int B,
                 {
                     // Easy case!  Couple (u[0], u[1]), (u[2], u[3]), ... (u[2K-2], u[2K-1]).
                     for (int i = 0; i < K; i++)
-                        matmult_bk(&T[l][threadIdx.x][4*i], &dT[l][threadIdx.x][4*i], 
+                        matmult_bk(&T[l][4*i][threadIdx.x], &dT[l][4*i][threadIdx.x], 
                                    u[2*i], u[2*i+1], dJdu[2*i], dJdu[2*i+1], temp, true);
                 }
             }

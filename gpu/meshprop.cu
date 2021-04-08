@@ -78,19 +78,19 @@ __global__ void backprop_test(float *p, float *dp, float *s,
 #define smem_offset 1
     
 #define K 1
-#define L0 36
+#define L0 45
 #define nL 8
 #define fname fwdprop_N64
 #include "fwdprop.cu"
 
 #define K 2
-#define L0 20
+#define L0 23
 #define nL 8
 #define fname fwdprop_N128
 #include "fwdprop.cu"
 
 #define K 3
-#define L0 14
+#define L0 15
 #define nL 16
 #define fname fwdprop_N192
 #include "fwdprop.cu"
@@ -102,7 +102,7 @@ __global__ void backprop_test(float *p, float *dp, float *s,
 #include "fwdprop.cu"
 
 #define K 5
-#define L0 8
+#define L0 9
 #define nL 32
 #define fname fwdprop_N320
 #include "fwdprop.cu"
@@ -132,13 +132,13 @@ __global__ void backprop_test(float *p, float *dp, float *s,
 //*
 
 #define K 1
-#define L0 18
+#define L0 22
 #define nL 16
 #define fname fwddiff_N64
 #include "fwddiff.cu"
 
 #define K 2
-#define L0 10
+#define L0 11
 #define nL 32
 #define fname fwddiff_N128
 #include "fwddiff.cu"
@@ -185,38 +185,38 @@ __global__ void backprop_test(float *p, float *dp, float *s,
 // Back-propagation of fields and gradients.
 //*
 #define K 1
-#define L0 15
-#define nL 9
+#define L0 22
+#define nL 16
 #define fname backdiff_N64
 #include "backdiff.cu"
     
 #define K 2
-#define L0 8
-#define nL 12
+#define L0 11
+#define nL 32
 #define fname backdiff_N128
 #include "backdiff.cu"
     
 #define K 3
-#define L0 5
-#define nL 12
+#define L0 7
+#define nL 32
 #define fname backdiff_N192
 #include "backdiff.cu"
 
 #define K 4
-#define L0 4
+#define L0 5
 #define nL 32
 #define fname backdiff_N256
 #include "backdiff.cu"
 
 #define K 5
-#define L0 3
-#define nL 48
+#define L0 4
+#define nL 32
 #define fname backdiff_N320
 #include "backdiff.cu"
 
 #define K 6
 #define L0 3
-#define nL 48
+#define nL 32
 #define fname backdiff_N384
 #include "backdiff.cu"
 
@@ -227,8 +227,8 @@ __global__ void backprop_test(float *p, float *dp, float *s,
 #include "backdiff.cu"
 
 #define K 10
-#define L0 1
-#define nL 48
+#define L0 2
+#define nL 32
 #define fname backdiff_N640
 #include "backdiff.cu"
 //*/

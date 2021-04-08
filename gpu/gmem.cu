@@ -23,7 +23,7 @@
 // Python code that checks this (for deubugging):
 /*
 (B, L, K) = (4, 2, 2)    # Batch size, mesh length, mesh width/64.
-ldu = 2*K*32; u_in = np.arange(B*ldu); T = np.zeros([L, 32, 4*K]).astype(int); u = np.zeros([B, 32, 2*K]).astype(int)
+ldu = 2*K*32; u_in = np.arange(B*ldu); T = np.zeros([L, 4*K, 32]).astype(int); u = np.zeros([B, 32, 2*K]).astype(int)
 
 for i in range(0, B, 2*L):
     print (f"i = {i}")
@@ -32,13 +32,12 @@ for i in range(0, B, 2*L):
             print (f"tix_y = {tix_y}")
             for k in range(2*K):
                 ind = 32*k + ldu*tix_y
-                print (f"idx=[{(tix_y//2)%L}][:32][{k+2*K*(tix_y%2)}] <-- [{ind}+:32]")
+                print (f"idx=[{(tix_y//2)%L}][{k+2*K*(tix_y%2)}][:32] <-- [{ind}+:32]")
                 for tix_x in range(32):
-                    T[(tix_y//2)%L, tix_x, k+2*K*(tix_y%2)] = u_in[ind+tix_x]
+                    T[(tix_y//2)%L, k+2*K*(tix_y%2), tix_x] = u_in[ind+tix_x]
             for k in range(2*K):
                 for tix_x in range(32):
-                    u[tix_y, tix_x, k] = T[(tix_y//2)%L, (2*K*tix_x + k)%32,
-                                           (2*K*tix_x + k)//32 + 2*K*(tix_y%2)]       
+                    u[tix_y, tix_x, k] = T[(tix_y//2)%L, (2*K*tix_x + k)//32 + 2*K*(tix_y%2), (2*K*tix_x + k)%32]       
 (u.flatten() == u_in).all()
 */
 
@@ -48,10 +47,10 @@ for i in range(0, B, 2*L):
 // load_shflcode: shuffles indices to load T into registers u[k].
 // save_shflcode: shuffles indices to put registers u[k] into T.
 // save_writcode: writes T -> u_out.
-#define load_readcode(T, u_in, cond)    T[(l/pack_u)%L0][threadIdx.x][k+2*K*(l%pack_u)] = cond ? u_in[32*k + threadIdx.x] : 0
-#define load_shflcode(T, u)             u[k] = T[(l/pack_u)%L0][(2*K*threadIdx.x + k)%32][(2*K*threadIdx.x + k)/32+2*K*(l%pack_u)]
-#define save_shflcode(T, u)             T[(l/pack_u)%L0][(2*K*threadIdx.x + k)%32][(2*K*threadIdx.x + k)/32+2*K*(l%pack_u)] = u[k]
-#define save_writcode(T, u_out, cond)   if (cond) {u_out[32*k + threadIdx.x] = T[(l/pack_u)%L0][threadIdx.x][k+2*K*(l%pack_u)];}
+#define load_readcode(T, u_in, cond)    T[(l/pack_u)%L0][k+2*K*(l%pack_u)][threadIdx.x] = cond ? u_in[32*k + threadIdx.x] : 0
+#define load_shflcode(T, u)             u[k] = T[(l/pack_u)%L0][(2*K*threadIdx.x + k)/32+2*K*(l%pack_u)][(2*K*threadIdx.x + k)%32]
+#define save_shflcode(T, u)             T[(l/pack_u)%L0][(2*K*threadIdx.x + k)/32+2*K*(l%pack_u)][(2*K*threadIdx.x + k)%32] = u[k]
+#define save_writcode(T, u_out, cond)   if (cond) {u_out[32*k + threadIdx.x] = T[(l/pack_u)%L0][k+2*K*(l%pack_u)][threadIdx.x];}
 // Generic loader.  Permutation keeps gmem reads coalesced.
 #define load_generic(read_code, shuffle_code, zero_code) { \
 for (int i = 0; i < b; i += pack_u*L0) \
@@ -148,7 +147,7 @@ K = 2    # Width of mesh: 64*K (2*K variables / thread)
 ldp = lds = 2*K*32
 p = np.array([1*np.arange(32*K*L), 2*np.arange(32*K*L)]).T.flatten()
 s = np.array([3*np.arange(32*K*L), 4*np.arange(32*K*L)]).T.flatten()
-T = np.zeros([L, 32, 4*K], dtype=int)
+T = np.zeros([L, 4*K, 32], dtype=int)
 
 def T_test(p1, p2, s1, s2):
     return np.array([p1, p2, s1, s2])
@@ -163,16 +162,14 @@ for i in range(0, K*L, B):
             for tix_x in range(32):
                 dm = (m*32 + tix_x)
                 idx_p = ldp*l + 2*dm; idx_s = lds*l + 2*dm
-                T[l, dm//K, 4*(dm%K):4*(dm%K+1)] = T_test(p[idx_p], p[idx_p+1],
+                T[l, 4*(dm%K):4*(dm%K+1), dm//K] = T_test(p[idx_p], p[idx_p+1],
                                                           s[idx_s], s[idx_s+1])
 (T.reshape(L*32*K, 4) == np.array([p[::2], p[1::2], s[::2], s[1::2]]).T).all()
 */
 
 #define i1_T (l/pack_T)
-#define i1_P (l/pack_P)
-#define i2_T (dm/K)
-#define i3_T (stride_T*(dm%K + K*(l%pack_T)))
-#define i3_P (stride_P*(dm%K + K*(l%pack_P)))
+#define i2_T (stride_T*(dm%K + K*(l%pack_T)))
+#define i3_T (dm/K)
 
 #define matrix_io(code_in, code_out) { \
 for (int i = 0; i < K*L_ker; i += blockDim.y) \
@@ -211,16 +208,11 @@ __syncthreads(); \
 // so that stride_T = 2, stride_P = 2.  I think.  Maybe more general if you define these at compile time.
 #define load_T_dT_bk \
     matrix_io(Tij_mzi(&p[idx_p], &dp[idx_p], &s[idx_s], \
-                        &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], &ps_cache[i1_P][i2_T][i3_P], false), \
+                        &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], (float *) 0, false), \
               Tij_identity(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]));
 
 // TODO: once this works, switch out &p[idx_p] -> ps_cache[][][i3_P], &s[idx_s] -> ps_cache[][][i3_P+2] for
 // better performance.
-//#define save_dp \
-//    matrix_io(dp_mzi(&p[idx_p], &s[idx_s], &dT[i1_T][i2_T][i3_T], &dp[idx_p]), )
 #define save_dp \
-    matrix_io(dp_mzi(&ps_cache[i1_P][i2_T][i3_P], &ps_cache[i1_P][i2_T][i3_P+2], &dT[i1_T][i2_T][i3_T], &dp[idx_p]), )
+    matrix_io(dp_mzi(&p[idx_p], &s[idx_s], &dT[i1_T][i2_T][i3_T], &dp[idx_p]), )
 
-//#undef i1_T
-//#undef i2_T
-//#undef i3_T
