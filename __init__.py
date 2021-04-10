@@ -21,6 +21,7 @@
 #   03/29/21: Added CartesianCrossing class, crossing conversion utilities, tweaks to gradient function, Hessians.
 #   04/03/21: First working CUDA code for mesh propagation.
 #   04/06/21: Added forward- and reverse-mode differentiation to the CUDA code.
+#   04/10/21: Added symmetric crossings to the CUDA code.
 
 from .crossing import Crossing, MZICrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork

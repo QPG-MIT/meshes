@@ -15,28 +15,29 @@
 #define L_ker (L0*pack_T)  // Actual number of layers stored in the kernel = L0*pack_T (default L0, sym: 2*L0).
 #define L_preload (L0*nL)  // Number of shifts / lens pre-loaded.
 
+#if CROSSING_TYPE == MZI
 __global__ void fname(int N, int L, int B, 
                       int *lens, int *shifts, 
                       float *p, float *dp, int ldp, 
                       float *s, int lds, 
-                      complex64 *u_in, complex64 *du_in, int ld_in,
-                      complex64 *u_out, complex64 *du_out, int ld_out)
+                      complex64 *u_in,  complex64 *du_in,
+                      complex64 *u_out, complex64 *du_out, int ldu)
 {
     const int pack_u = 2; // Packing factor = T.shape[2]/2 (default 2)
     const int pack_T = 1; // Packing factor 4 / (# T params) (default: 1, symmetric Tij: 2)
     const int stride_T = 4 / pack_T;
+    const int stride_s = 2;
 
     // There are blockDim.y warps in each block (blockDim.x = 32).  Each references a separate instance.
 	// The blocks are therefore offset by blockDim.y instances, i.e. a pointer offset of ld * blockDim.y
 	// Kernel doesn't support multiplexing over p, s.  This is assumed to be easier by calling separate kernels.
-	u_in  += ld_in  * (blockDim.y*blockIdx.x + threadIdx.y);
-	u_out += ld_out * (blockDim.y*blockIdx.x + threadIdx.y);
-    if (du_in)  {du_in  += ld_in  * (blockDim.y*blockIdx.x + threadIdx.y);}
-    if (du_out) {du_out += ld_out * (blockDim.y*blockIdx.x + threadIdx.y);}
+	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+	u_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+    if (du_in)  {du_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
+    if (du_out) {du_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
     
     // Number of active warps (this block's mini-batch).
     int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);
-    
 		
 	// Transfer matrices.
 	// The b^th matrix of column c goes in T[c][4(b%K):4(b%K)+4][b/K].
@@ -67,7 +68,7 @@ __global__ void fname(int N, int L, int B,
         for (int l = 0; l < L_blk; l++)
         {
             complex64 temp, u_2k, du_2k;
-            if (shifts_cache[(x+l) % L_preload] % 2) //((x+l) % 2)
+            if (shifts_cache[(x+l) % L_preload] % 2)
             {
                 // Couple (u[1], u[2]), (u[3], u[4]), ... (u[2K-3], u[2K-2]).
                 for (int i = 0; i < K-1; i++)
@@ -103,6 +104,69 @@ __global__ void fname(int N, int L, int B,
 	// Write data to output.  Same permutation as for input, but reversed.  Macro from meshprop.cu.
     save_u_du(u, du, u_out, du_out);
 }
+#endif
+
+
+
+#if CROSSING_TYPE == SYM
+__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, float *s, int lds, 
+                      complex64 *u_in, complex64 *du_in, complex64 *u_out, complex64 *du_out, int ldu, bool cartesian)
+{
+    const int pack_T = 1, stride_T = 3, stride_s = 1;
+	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+	u_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+    if (du_in)  {du_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
+    if (du_out) {du_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
+    int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);     // # active warps
+    
+	__shared__ float T[L0][3*K][32], dT[L0][3*K][32];                   // Transfer matrices
+    __shared__ int shifts_cache[L_preload], lens_cache[L_preload];      // Index cache
+	float u[2*K], v[2*K], du[2*K], dv[2*K];                             // State and gradient, in registers.
+	
+    load_u_du_sym(u, v, du, dv, u_in, du_in);           // Load data to u, du.
+	for (int x = 0; x < L; x += L_ker)
+    {
+        int L_blk = (L_ker < L-x) ? L_ker : L-x;        // Layers in this block.
+        load_pos_cache_fwd;                             // Refresh cache.
+        load_T_dT_sym;                                  // Load matrices for this block.
+        for (int l = 0; l < L_blk; l++)                 // Iterate through L_blk layers.
+        {
+            float temp1, temp2, temp3, u_2k, v_2k, du_2k, dv_2k;
+            if (shifts_cache[(x+l) % L_preload] % 2)        // MZIs not aligned with threads.  Warp shuffle.
+            {
+                for (int i = 0; i < K-1; i++)
+                    matmult_d_sym(&T[l][3*i][threadIdx.x], &dT[l][3*i][threadIdx.x], 
+                                  u[2*i+1], v[2*i+1], u[2*i+2], v[2*i+2], 
+                                  du[2*i+1], dv[2*i+1], du[2*i+2], dv[2*i+2], 
+                                  temp1, temp2, temp3, true);
+                u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); 
+                v_2k = __shfl_down_sync(0xffffffffu, v[0], 1, 32);
+                du_2k = __shfl_down_sync(0xffffffffu, du[0], 1, 32); 
+                dv_2k = __shfl_down_sync(0xffffffffu, dv[0], 1, 32);
+                matmult_d_sym(&T[l][3*K-3][threadIdx.x], &dT[l][3*K-3][threadIdx.x], 
+                              u[2*K-1], v[2*K-1], u_2k, v_2k, 
+                              du[2*K-1], dv[2*K-1], du_2k, dv_2k, 
+                              temp1, temp2, temp3, threadIdx.x != 31);
+                u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); 
+                v_2k = __shfl_up_sync(0xffffffffu, v_2k, 1, 32);
+                du_2k = __shfl_up_sync(0xffffffffu, du_2k, 1, 32); 
+                dv_2k = __shfl_up_sync(0xffffffffu, dv_2k, 1, 32);
+                if (threadIdx.x) {u[0] = u_2k; v[0] = v_2k; du[0] = du_2k; dv[0] = dv_2k;}
+            }
+            else
+                for (int i = 0; i < K; i++)                 // MZIs aligned with threads.  Easy case!
+                    matmult_d_sym(&T[l][3*i][threadIdx.x], &dT[l][3*i][threadIdx.x], 
+                                  u[2*i], v[2*i], u[2*i+1], v[2*i+1], 
+                                  du[2*i], dv[2*i], du[2*i+1], dv[2*i+1], 
+                                  temp1, temp2, temp3, true);
+        }
+        p += L_ker * ldp; dp += L_ker * ldp;
+        if (s) {s += L_ker * lds;}
+        __syncthreads();
+    }
+    save_u_du_sym(u, v, du, dv, u_out, du_out);         // Save output.
+}
+#endif
 
 #undef L_ker
 #undef L_preload

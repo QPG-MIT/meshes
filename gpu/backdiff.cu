@@ -15,6 +15,7 @@
 #define L_ker (L0*pack_T)  // Actual number of layers stored in the kernel = L0*pack_T (default L0, sym: 2*L0).
 #define L_preload (L0*nL)  // Number of shifts / lens pre-loaded.
 
+#if CROSSING_TYPE == MZI
 __global__ void fname(int N, int L, int B, 
                       int *lens, int *shifts, 
                       float *p, float *dp, int ldp, 
@@ -25,6 +26,7 @@ __global__ void fname(int N, int L, int B,
     const int pack_u = 2; // Packing factor = T.shape[2]/2 (default 2)
     const int pack_T = 1; // Packing factor 4 / (# T params) (default: 1, symmetric Tij: 2)
     const int stride_T = 4 / pack_T;
+    const int stride_s = 2;
 
     // There are blockDim.y warps in each block (blockDim.x = 32).  Each references a separate instance.
 	// The blocks are therefore offset by blockDim.y instances, i.e. a pointer offset of ld * blockDim.y
@@ -119,6 +121,71 @@ __global__ void fname(int N, int L, int B,
 	// Write data to output.  Same permutation as for input, but reversed.  Macro from meshprop.cu.
     save_u_du(u, dJdu, u_in, dJdu_in);
 }
+#endif
+
+
+
+#if CROSSING_TYPE == SYM
+__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, float *s, int lds, 
+                      complex64 *u_out, complex64 *dJdu_out, complex64 *u_in,  complex64 *dJdu_in, int ldu, bool cartesian)
+{
+    const int pack_T = 1, stride_T = 3, stride_s = 1;
+	u_out     += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+	u_in      += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+    dJdu_out  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+    if (dJdu_in) {dJdu_in += ldu  * (blockDim.y*blockIdx.x + threadIdx.y);}
+    int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);     // # active warps
+    p += ldp * (L-1); dp += ldp * (L-1); s += lds * (L-1); lens += (L-1); shifts += (L-1); ldp *= -1; lds *= -1;
+
+    __shared__ float T[L0][3*K][32], dT[L0][3*K][32];               // Transfer matrices
+    __shared__ int shifts_cache[L_preload], lens_cache[L_preload];  // Index cache
+	float u[2*K], v[2*K], dJdu[2*K], dJdv[2*K];                     // State, registers.
+	
+    load_u_du_sym(u, v, dJdu, dJdv, u_out, dJdu_out);               // Load state, gradient.
+	for (int x = 0; x < L; x += L_ker)
+    {
+        int L_blk = (L_ker < L-x) ? L_ker : L-x;                    // Layers in this block.
+        load_pos_cache_rev;                                         // Load cache.
+        load_T_dT_bk_sym;                                           // Load matrices for this block.
+        if (threadIdx.y < b)                                        // Iterate through L_blk layers.
+        {
+            for (int l = 0; l < L_blk; l++)
+            {
+                float temp1, temp2, temp3, u_2k, v_2k, dJdu_2k, dJdv_2k;
+                if (shifts_cache[(x+l) % L_preload] % 2)            // MZIs not aligned with threads.  Warp shuffle.
+                {
+                    for (int i = 0; i < K-1; i++)
+                        matmult_bk_sym(&T[l][3*i][threadIdx.x], &dT[l][3*i][threadIdx.x], 
+                                       u[2*i+1], v[2*i+1], u[2*i+2], v[2*i+2], 
+                                       dJdu[2*i+1], dJdv[2*i+1], dJdu[2*i+2], dJdv[2*i+2], 
+                                       temp1, temp2, temp3, true);
+                    u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); dJdu_2k = __shfl_down_sync(0xffffffffu, dJdu[0], 1, 32);
+                    v_2k = __shfl_down_sync(0xffffffffu, v[0], 1, 32); dJdv_2k = __shfl_down_sync(0xffffffffu, dJdv[0], 1, 32);
+                    matmult_bk_sym(&T[l][3*K-3][threadIdx.x], &dT[l][3*K-3][threadIdx.x], 
+                                   u[2*K-1], v[2*K-1], u_2k, v_2k,
+                                   dJdu[2*K-1], dJdv[2*K-1], dJdu_2k, dJdv_2k, 
+                                   temp1, temp2, temp3, threadIdx.x != 31);
+                    u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); dJdu_2k = __shfl_up_sync(0xffffffffu, dJdu_2k, 1, 32);
+                    v_2k = __shfl_up_sync(0xffffffffu, v_2k, 1, 32); dJdv_2k = __shfl_up_sync(0xffffffffu, dJdv_2k, 1, 32);
+                    if (threadIdx.x) {u[0] = u_2k; v[0] = v_2k; dJdu[0] = dJdu_2k; dJdv[0] = dJdv_2k;}
+                }
+                else                                                // MZIs aligned with threads.  Easy case!
+                    for (int i = 0; i < K; i++)
+                        matmult_bk_sym(&T[l][3*i][threadIdx.x], &dT[l][3*i][threadIdx.x], 
+                                       u[2*i], v[2*i], u[2*i+1], v[2*i+1], 
+                                       dJdu[2*i], dJdv[2*i], dJdu[2*i+1], dJdv[2*i+1],
+                                       temp1, temp2, temp3, true);
+            }
+        }
+        __syncthreads();
+        save_dp_sym;                                                // Save parameter gradient.
+        p += L_ker * ldp; dp += L_ker * ldp; 
+        if (s) {s += L_ker * lds;}
+        __syncthreads();
+    }
+    save_u_du_sym(u, v, dJdu, dJdv, u_in, dJdu_in);                 // Write output.
+}
+#endif
 
 #undef L_ker
 #undef L_preload
