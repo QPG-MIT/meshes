@@ -12,7 +12,7 @@
 //   04/03/21: Created this package.  Similar to the 2018 code, but easier to modify and extend.  CuPy compatible.
 //   04/05/21: Add forward-mode differentiation routine.
 //   04/06/21: Added reverse-mode differentiation (backpropagation) routine.
-//   04/10/21: Added support for symmetric crossings.
+//   04/10/21: Added support for symmetric and real orthogonal crossings.
 
 
 #include<cupy/complex.cuh>
@@ -34,8 +34,9 @@ extern "C" {
 #define ORTH 3
 
 
-#include "sym.cu"
 #include "mzi.cu"
+#include "sym.cu"
+#include "orth.cu"
 
 
 // TESTING SANDBOX
@@ -67,19 +68,19 @@ extern "C" {
 #define K 4
 #define L0 11
 #define nL 12
-#define fname fwdprop_N256
+#define fname fwdprop_N256_mzi
 #include "fwdprop.cu"
 
 #define K 4
 #define L0 5
 #define nL 32
-#define fname fwddiff_N256
+#define fname fwddiff_N256_mzi
 #include "fwddiff.cu"
 
 #define K 4
 #define L0 5
 #define nL 32
-#define fname backdiff_N256
+#define fname backdiff_N256_mzi
 #include "backdiff.cu"
     
 #undef  CROSSING_TYPE

@@ -23,10 +23,8 @@ __global__ void fname(int N, int L, int B,
                       complex64 *u_out, complex64 *dJdu_out,
                       complex64 *u_in,  complex64 *dJdu_in,  int ldu)
 {
-    const int pack_u = 2; // Packing factor = T.shape[2]/2 (default 2)
     const int pack_T = 1; // Packing factor 4 / (# T params) (default: 1, symmetric Tij: 2)
     const int stride_T = 4 / pack_T;
-    const int stride_s = 2;
 
     // There are blockDim.y warps in each block (blockDim.x = 32).  Each references a separate instance.
 	// The blocks are therefore offset by blockDim.y instances, i.e. a pointer offset of ld * blockDim.y
@@ -129,7 +127,7 @@ __global__ void fname(int N, int L, int B,
 __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, float *s, int lds, 
                       complex64 *u_out, complex64 *dJdu_out, complex64 *u_in,  complex64 *dJdu_in, int ldu, bool cartesian)
 {
-    const int pack_T = 1, stride_T = 3, stride_s = 1;
+    const int pack_T = 1, stride_T = 3;
 	u_out     += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
 	u_in      += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
     dJdu_out  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
@@ -185,6 +183,67 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, flo
     }
     save_u_du_sym(u, v, dJdu, dJdv, u_in, dJdu_in);                 // Write output.
 }
+#endif
+
+
+
+#if CROSSING_TYPE == ORTH
+
+#define s 0
+#define lds 0
+
+__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, 
+                      float *u_out, float *dJdu_out, float *u_in, float *dJdu_in, int ldu)
+{
+    const int pack_T = 1, stride_T = 2, stride_dth = 1;
+
+	u_out     += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+	u_in      += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+    dJdu_out  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+    if (dJdu_in) {dJdu_in += ldu  * (blockDim.y*blockIdx.x + threadIdx.y);}
+    int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);     // Batch size.
+    p += ldp * (L-1); dp += ldp * (L-1); lens += (L-1); shifts += (L-1); ldp *= -1;             // Reverse the mesh.
+	__shared__ float T[L0][2*K][32], dth[L0][K][32];                    // Transfer matrix.
+    __shared__ int shifts_cache[L_preload], lens_cache[L_preload];      // Index cache.
+    float u[2*K], dJdu[2*K];                                            // State, registers.
+	
+    load_u_du_orth(u, dJdu, u_out, dJdu_out);                           // Load data.
+	for (int x = 0; x < L; x += L_ker)                                  // Loop over blocks.
+    {
+        int L_blk = (L_ker < L-x) ? L_ker : L-x;                        // Block size.
+        load_pos_cache_rev;                                             // Refresh cache.
+        load_T_dT_bk_orth;                                              // Load matrices. 
+        if (threadIdx.y < b)
+            for (int l = 0; l < L_blk; l++)                             // Iterate through block layers.
+            {
+                float temp, u_2k, dJdu_2k;
+                if (shifts_cache[(x+l) % L_preload] % 2)                // Misaligned MZIs.  Warp shuffle.
+                {
+                    for (int i = 0; i < K-1; i++)
+                        matmult_bk_orth(&T[l][2*i][threadIdx.x], &dth[l][i][threadIdx.x], 
+                                        u[2*i+1], u[2*i+2], dJdu[2*i+1], dJdu[2*i+2], temp, true);
+                    u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); dJdu_2k = __shfl_down_sync(0xffffffffu, dJdu[0], 1, 32);
+                    matmult_bk_orth(&T[l][2*K-2][threadIdx.x], &dth[l][K-1][threadIdx.x], 
+                                    u[2*K-1], u_2k, dJdu[2*K-1], dJdu_2k, temp, threadIdx.x != 31);
+                    u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); dJdu_2k = __shfl_up_sync(0xffffffffu, dJdu_2k, 1, 32);
+                    if (threadIdx.x) {u[0] = u_2k; dJdu[0] = dJdu_2k;}
+                }
+                else                                                    // Aligned MZIs.  Easy case!
+                    for (int i = 0; i < K; i++)
+                        matmult_bk_orth(&T[l][2*i][threadIdx.x], &dth[l][i][threadIdx.x], 
+                                        u[2*i], u[2*i+1], dJdu[2*i], dJdu[2*i+1], temp, true);
+            }
+        __syncthreads();
+        save_dp_orth;                                                   // Save parameter gradient.
+        p += L_ker * ldp; dp += L_ker * ldp;
+        __syncthreads();
+    }
+    save_u_du_orth(u, dJdu, u_in, dJdu_in);                             // Write output.
+}
+
+#undef s
+#undef lds
+
 #endif
 
 #undef L_ker

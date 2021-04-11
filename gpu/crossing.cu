@@ -6,6 +6,7 @@
 //
 // History:
 //   04/06/21: Moved this to its own file, added matmult_** routines and dp_mzi (for backprop).
+//   04/10/21: Added symmetric and orthogonal representations.
 
 // Initializes an identity transfer matrix [[1, 0], [0, 1]].
 __device__ void Tij_identity(complex64 *T, complex64 *dT)
@@ -24,13 +25,11 @@ __device__ void Tij_identity_sym(float *T, float *dT)
         dT[0] = 0; dT[32] = 0; dT[64] = 0;
     }
 }
-__device__ void Tij_identity_orth(float *T, float *dT)
+__device__ void Tij_identity_orth(float *T, float *dth)
 {
     T[0] = 1; T[32] = 0;
-    if (dT)
-    {
-        dT[0] = 0; dT[32] = 0;
-    }
+    if (dth)
+        dth[0] = 0;
 }
 
 // Initializes T = [T11, T12, T21, T22] to given MZI settings (θ, φ) and imperfections (α, β).
@@ -123,28 +122,21 @@ __device__ void Tij_mzi_sym(const float *p, const float *dp, const float *s, flo
 //
 // T = [[sin(θ/2), -cos(θ/2)],
 //      [cos(θ/2),  sin(θ/2)]]
-__device__ void Tij_mzi_orth(const float *p, const float *dp, const float *s, float *T, float *dT, bool init_dT)
+__device__ void Tij_mzi_orth(const float *p, const float *dp, float *T, float *dth, bool init_dT)
 {
 	// cos(θ/2), sin(θ/2)
 	float C, S;
 	__sincosf(p[0]/2, &S, &C);
     
-    // T = [[exp(+i*φ) (sin(θ/2) + i cos(θ/2)sin(2α)),  i cos(θ/2)cos(2α)                       ],
-    //      [i cos(θ/2)cos(2α),                         exp(-i*φ) (sin(θ/2) - i cos(θ/2)sin(2α))]]
     T[0 ] =  S;
     T[32] = -C;
 
-    if (dT)
+    if (dth)
     {
         if (init_dT)
-        {
-            dT[0 ] = 0.5f*dp[0]*C;
-            dT[32] = 0.5f*dp[0]*S;
-        }
+            dth[0] = 0.5f*dp[0];
         else
-        {
-            dT[0] = 0; dT[32] = 0;
-        }
+            dth[0] = 0.0f;
     }
 }
 
@@ -167,9 +159,9 @@ __device__ void dp_mzi(const float *p, const float *s, const complex64 *dT, floa
     dp0 = (dT[0 ] * complex64(C1, S1) * (0.5f * (Cm-Sp) * complex64(-S,  C)) + 
            dT[32] * complex64(C , S ) * (0.5f * (Cp+Sm) * complex64(-C, -S)) + 
            dT[64] * complex64(C1, S1) * (0.5f * (Cp-Sm) * complex64(-C, -S)) + 
-           dT[96] * complex64(C , S ) * (0.5f * (Cm+Sp) * complex64( S, -C))).real() * 2;
+           dT[96] * complex64(C , S ) * (0.5f * (Cm+Sp) * complex64( S, -C))).real();
     dp1 = (dT[0 ] * complex64(C1, S1) * (complex64(-Cm*S, -C*Sp)) + 
-           dT[64] * complex64(C1, S1) * (complex64(-C*Cp,  S*Sm))).real() * 2;
+           dT[64] * complex64(C1, S1) * (complex64(-C*Cp,  S*Sm))).real();
     atomicAdd(&dp[0], dp0);
     atomicAdd(&dp[1], dp1);
 }
@@ -185,23 +177,16 @@ __device__ void dp_mzi_sym(const float *p, const float *s, const float *dT, floa
     float dp0, dp1;
     dp0 = (dT[0 ] * (C_th*C_ph + S_th*S_ph*S_2a) + 
            -dT[32] * (C_th*S_ph - S_th*C_ph*S_2a) - 
-           -dT[64] * S_th*C_2a) * 1.0f;
+           -dT[64] * S_th*C_2a) * 0.5f;
     dp1 = (-dT[0 ] * (S_th*S_ph + C_th*C_ph*S_2a) + 
-            -dT[32] * (S_th*C_ph - C_th*S_ph*S_2a)) * 2.0f;
-    /*dp0 = (dT[0 ] * (C_th*C_ph + S_th*S_ph*S_2a) + 
-           dT[32] * (C_th*S_ph - S_th*C_ph*S_2a) - 
-           dT[64] * S_th*C_2a) * 1.0f;
-    dp1 = (-dT[0 ] * (S_th*S_ph + C_th*C_ph*S_2a) + 
-            dT[32] * (S_th*C_ph - C_th*S_ph*S_2a)) * 2.0f;*/
+            -dT[32] * (S_th*C_ph - C_th*S_ph*S_2a)) * 1.0f;
     atomicAdd(&dp[0], dp0);
     atomicAdd(&dp[1], dp1);
 }
-__device__ void dp_mzi_orth(const float *T, const float *dT, float *dp)
+__device__ void dp_mzi_orth(const float *dth, float *dp)
 {
-    float dp0 = (T[0]*dT[32] - T[32]*dT[0])*2.0f;
-    atomicAdd(&dp[0], dp0);
+    atomicAdd(&dp[0], 0.5f*dth[0]);
 }
-
 
 __device__ __inline__ void matmult(const complex64 *T, complex64 &u1, complex64 &u2, complex64 &temp, bool cond)
 {
@@ -265,11 +250,11 @@ __device__ __inline__ void matmult_d_sym(const float *T, const float *dT, float 
     // u_i -> T_{ij} u_j
     matmult_sym(T, u1, v1, u2, v2, temp1, temp2, temp3, cond);
 }
-__device__ __inline__ void matmult_d_orth(const float *T, const float *dT, float &u1, float &u2, 
+__device__ __inline__ void matmult_d_orth(const float *T, const float *dth, float &u1, float &u2, 
                                           float &du1, float &du2, float &temp, bool cond)
 {
-    temp =  T[0 ]*du1 + T[32]*du2 + dT[0 ]*u1 + dT[32]*u2;
-    du2  = -T[32]*du1 + T[0 ]*du2 - dT[32]*u1 + dT[0 ]*u2;
+    temp =  T[0 ]*du1 + T[32]*du2 + dth[0]*(-T[32]*u1 + T[0 ]*u2);
+    du2  = -T[32]*du1 + T[0 ]*du2 + dth[0]*(-T[ 0]*u1 - T[32]*u2);
     if (cond)
         du1 = temp;
     matmult_orth(T, u1, u2, temp, cond);

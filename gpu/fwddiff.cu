@@ -23,10 +23,8 @@ __global__ void fname(int N, int L, int B,
                       complex64 *u_in,  complex64 *du_in,
                       complex64 *u_out, complex64 *du_out, int ldu)
 {
-    const int pack_u = 2; // Packing factor = T.shape[2]/2 (default 2)
     const int pack_T = 1; // Packing factor 4 / (# T params) (default: 1, symmetric Tij: 2)
     const int stride_T = 4 / pack_T;
-    const int stride_s = 2;
 
     // There are blockDim.y warps in each block (blockDim.x = 32).  Each references a separate instance.
 	// The blocks are therefore offset by blockDim.y instances, i.e. a pointer offset of ld * blockDim.y
@@ -112,7 +110,7 @@ __global__ void fname(int N, int L, int B,
 __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, float *s, int lds, 
                       complex64 *u_in, complex64 *du_in, complex64 *u_out, complex64 *du_out, int ldu, bool cartesian)
 {
-    const int pack_T = 1, stride_T = 3, stride_s = 1;
+    const int pack_T = 1, stride_T = 3;
 	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
 	u_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
     if (du_in)  {du_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
@@ -167,6 +165,64 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, flo
     save_u_du_sym(u, v, du, dv, u_out, du_out);         // Save output.
 }
 #endif
+
+
+
+#if CROSSING_TYPE == ORTH
+
+#define s 0
+#define lds 0
+
+__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, 
+                      float *u_in, float *du_in, float *u_out, float *du_out, int ldu)
+{
+    const int pack_T = 1, stride_T = 2, stride_dth = 1;
+
+	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+	u_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+    if (du_in)  {du_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
+    if (du_out) {du_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
+    int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);     // Batch size.
+	__shared__ float T[L0][2*K][32], dth[L0][K][32];                    // Transfer matrix & d_theta
+    __shared__ int shifts_cache[L_preload], lens_cache[L_preload];      // Index cache.
+	float u[2*K], du[2*K];                                              // State, registers.
+	
+    load_u_du_orth(u, du, u_in, du_in);                         // Load data from memory.
+	for (int x = 0; x < L; x += L_ker)                          // Loop over layer blocks.
+    {
+        int L_blk = (L_ker < L-x) ? L_ker : L-x;                // Layers in this block.
+        load_pos_cache_fwd;                                     // Refresh cache.
+        load_T_dT_orth;                                         // Load T & d_theta.
+        for (int l = 0; l < L_blk; l++)                         // Iterate through layers.
+        {
+            float temp, u_2k, du_2k;
+            if (shifts_cache[(x+l) % L_preload] % 2)            // Misaligned MZIs: warp shuffle.
+            {
+                for (int i = 0; i < K-1; i++)
+                    matmult_d_orth(&T[l][2*i][threadIdx.x], &dth[l][i][threadIdx.x], 
+                                   u[2*i+1], u[2*i+2], du[2*i+1], du[2*i+2], temp, true);
+                u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); du_2k = __shfl_down_sync(0xffffffffu, du[0], 1, 32);
+                matmult_d_orth(&T[l][2*K-2][threadIdx.x], &dth[l][K-1][threadIdx.x], 
+                               u[2*K-1], u_2k, du[2*K-1], du_2k, temp, threadIdx.x != 31);
+                u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); du_2k = __shfl_up_sync(0xffffffffu, du_2k, 1, 32);
+                if (threadIdx.x) {u[0] = u_2k; du[0] = du_2k;}
+            }
+            else                                                // Aligned MZIs.  Easy case!
+                for (int i = 0; i < K; i++)
+                    matmult_d_orth(&T[l][2*i][threadIdx.x], &dth[l][i][threadIdx.x], 
+                                   u[2*i], u[2*i+1], du[2*i], du[2*i+1], temp, true);
+        }
+        p  += L_ker * ldp; dp += L_ker * ldp;
+        __syncthreads();
+    }
+    save_u_du_orth(u, du, u_out, du_out);                       // Save output.
+}
+
+#undef s
+#undef lds
+
+#endif
+
 
 #undef L_ker
 #undef L_preload

@@ -15,53 +15,54 @@
 #define CROSSING_TYPE  MZI
 
 // Inference / forward propagation of fields, no derivative terms.
+// (K=1 optimized for 24k smem, others for 48k smem)
 //*
 #define K 1
-#define L0 45
+#define L0 22
 #define nL 8
-#define fname fwdprop_N64
+#define fname fwdprop_N64_mzi
 #include "fwdprop.cu"
 
 #define K 2
 #define L0 23
 #define nL 8
-#define fname fwdprop_N128
+#define fname fwdprop_N128_mzi
 #include "fwdprop.cu"
 
 #define K 3
 #define L0 15
 #define nL 16
-#define fname fwdprop_N192
+#define fname fwdprop_N192_mzi
 #include "fwdprop.cu"
 
 #define K 4
 #define L0 11
 #define nL 12
-#define fname fwdprop_N256
+#define fname fwdprop_N256_mzi
 #include "fwdprop.cu"
 
 #define K 5
 #define L0 9
 #define nL 32
-#define fname fwdprop_N320
+#define fname fwdprop_N320_mzi
 #include "fwdprop.cu"
 
 #define K 6
 #define L0 7
 #define nL 32
-#define fname fwdprop_N384
+#define fname fwdprop_N384_mzi
 #include "fwdprop.cu"
 
 #define K 8
 #define L0 5
 #define nL 32
-#define fname fwdprop_N512
+#define fname fwdprop_N512_mzi
 #include "fwdprop.cu"
 
 #define K 10
 #define L0 4
 #define nL 32
-#define fname fwdprop_N640
+#define fname fwdprop_N640_mzi
 #include "fwdprop.cu"
 //*/
 
@@ -70,100 +71,100 @@
 #define K 1
 #define L0 22
 #define nL 16
-#define fname fwddiff_N64
+#define fname fwddiff_N64_mzi
 #include "fwddiff.cu"
 
 #define K 2
 #define L0 11
 #define nL 32
-#define fname fwddiff_N128
+#define fname fwddiff_N128_mzi
 #include "fwddiff.cu"
 
 #define K 3
 #define L0 7
 #define nL 32
-#define fname fwddiff_N192
+#define fname fwddiff_N192_mzi
 #include "fwddiff.cu"
 
 #define K 4
 #define L0 5
 #define nL 32
-#define fname fwddiff_N256
+#define fname fwddiff_N256_mzi
 #include "fwddiff.cu"
 
 #define K 5
 #define L0 4
 #define nL 32
-#define fname fwddiff_N320
+#define fname fwddiff_N320_mzi
 #include "fwddiff.cu"
 
 #define K 6
 #define L0 3
 #define nL 32
-#define fname fwddiff_N384
+#define fname fwddiff_N384_mzi
 #include "fwddiff.cu"
 
 #define K 8
 #define L0 2
 #define nL 32
-#define fname fwddiff_N512
+#define fname fwddiff_N512_mzi
 #include "fwddiff.cu"
 
 #define K 10
 #define L0 2
 #define nL 32
-#define fname fwddiff_N640
+#define fname fwddiff_N640_mzi
 #include "fwddiff.cu"
 //*/
-        
+
 // Back-propagation of fields and gradients.
 //*
 #define K 1
 #define L0 22
 #define nL 16
-#define fname backdiff_N64
+#define fname backdiff_N64_mzi
 #include "backdiff.cu"
     
 #define K 2
 #define L0 11
 #define nL 32
-#define fname backdiff_N128
+#define fname backdiff_N128_mzi
 #include "backdiff.cu"
     
 #define K 3
 #define L0 7
 #define nL 32
-#define fname backdiff_N192
+#define fname backdiff_N192_mzi
 #include "backdiff.cu"
 
 #define K 4
 #define L0 5
 #define nL 32
-#define fname backdiff_N256
+#define fname backdiff_N256_mzi
 #include "backdiff.cu"
 
 #define K 5
 #define L0 4
 #define nL 32
-#define fname backdiff_N320
+#define fname backdiff_N320_mzi
 #include "backdiff.cu"
 
 #define K 6
 #define L0 3
 #define nL 32
-#define fname backdiff_N384
+#define fname backdiff_N384_mzi
 #include "backdiff.cu"
 
 #define K 8
 #define L0 2
 #define nL 48
-#define fname backdiff_N512
+#define fname backdiff_N512_mzi
 #include "backdiff.cu"
 
 #define K 10
 #define L0 2
 #define nL 32
-#define fname backdiff_N640
+#define fname backdiff_N640_mzi
 #include "backdiff.cu"
 //*/
     

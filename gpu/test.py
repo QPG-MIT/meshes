@@ -7,6 +7,7 @@
 #   04/03/21: Created this file.
 #   04/05/21: Added support for forward differentiation.
 #   04/06/21: Reverse differentiation and CPU timing comparison.
+#   04/10/21: Added symmetric and orthogonal representations.
 
 
 import numpy as np
@@ -54,7 +55,8 @@ if (inf or fd or bd):
 # Runs a bunch of parameters, checks GPU result against block-diagonal matrix multiplication.
 # Randomly varies N, L, B, nWarp, shifts, lens.
 def test_fwd_acc(diff=False, mode='mzi'):
-    post = {'mzi': '', 'sym': '_sym'}[mode]
+    (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
+    post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
     print ("Accuracy Test: " + ("fwddiff_N256" if diff else "fwdprop_N256")+post)
     print ("--------------------------------------")
     for moo in range(20):
@@ -63,8 +65,9 @@ def test_fwd_acc(diff=False, mode='mzi'):
         N = np.random.randint(128, 256+1); Nwarp = np.random.randint(2, 21 if diff else 31); Nblk = int(np.ceil(B/Nwarp))
         print (f"N={N}, L={L:2d}, B={B:2d}, Nwarp={Nwarp:2d}...", end="")
         # Inputs.
-        (p, dp) = np.random.randn(2, L, N//2, 2); s = np.random.randn(L, N//2, {'mzi': 2, 'sym': 1}[mode])
+        (p, dp) = np.random.randn(2, L, N//2, n_p); s = np.random.randn(L, N//2, n_s)
         (u_in, du_in) = np.random.randn(2, B, N, 2).dot([1, 1j]); 
+        if (mode == 'orth'): u_in = np.real(u_in); du_in = np.real(du_in)
         ldp = p[0].size; lds = s[0].size; ldu = N
         shifts = np.random.randint([N-1]*L); lens = np.random.randint((N-shifts)//2)   # Random splitter placement.
         # GPU code.
@@ -72,11 +75,13 @@ def test_fwd_acc(diff=False, mode='mzi'):
         shifts_d = cp.asarray(shifts, dtype=cp.int32); lens_d = cp.asarray(lens, dtype=cp.int32)
         (p_d, dp_d, s_d) = [cp.asarray(x, dtype=cp.float32) for x in (p, dp, s)]
         (N_d, L_d, B_d, ldp_d, lds_d, ldu_d) = map(cp.int32, (N, L, B, ldp, lds, ldu))
-        in_d = cp.asarray(u_in, dtype=cp.complex64); out_d = cp.asarray(in_d*0); 
-        din_d = cp.asarray(du_in, dtype=cp.complex64); dout_d = cp.asarray(din_d*0)
-        args = ([N_d, L_d, B_d, lens_d, shifts_d] + 
-                ([p_d, dp_d, ldp_d, s_d, lds_d, in_d, din_d, out_d, dout_d, ldu_d] if diff else
-                 [p_d, ldp_d, s_d, lds_d, in_d, out_d, ldu_d]) + {'mzi': [], 'sym': [cp.bool(False)]}[mode])
+        in_d = cp.asarray(u_in, dtype=dtype); out_d = cp.asarray(in_d*0); 
+        din_d = cp.asarray(du_in, dtype=dtype); dout_d = cp.asarray(din_d*0)
+        args = ([N_d, L_d, B_d, lens_d, shifts_d, p_d] + [dp_d][:diff] + [ldp_d] + [s_d, lds_d][:2*(mode!='orth')] + 
+                [in_d] + [din_d][:diff] + [out_d] + [dout_d][:diff] + [ldu_d] + [cp.bool(False)][:mode=='sym'])
+        #args = ([N_d, L_d, B_d, lens_d, shifts_d] + 
+        #        ([p_d, dp_d, ldp_d, s_d, lds_d, in_d, din_d, out_d, dout_d, ldu_d] if diff else
+        #         [p_d, ldp_d, s_d, lds_d, in_d, out_d, ldu_d]) + {'mzi': [], 'sym': [cp.bool(False)]}[mode])
         func((Nblk,), (32,Nwarp), tuple(args))
         u_out = out_d.get(); du_out = dout_d.get()
         # CPU code for comparison.
@@ -91,6 +96,9 @@ def test_fwd_acc(diff=False, mode='mzi'):
                 (C, C_2a, S, S_2a) = [fn(x) for fn in [np.cos, np.sin] for x in [theta/2, 2*beta]]
                 return np.array([[np.exp(1j*phi)*(S + 1j*C*S_2a),  1j*C*C_2a],
                                  [1j*C*C_2a, np.exp(-1j*phi)*(S - 1j*C*S_2a)]])
+            elif mode == 'orth':
+                (theta,) = p.T; (C, S) = (np.cos(theta/2), np.sin(theta/2))
+                return np.array([[S, -C], [C, S]])
         u   = u_in;          du  = du_in
         u_p = u + 1e-5*du;   u_m = u - 1e-5*du
         for i in range(L):
@@ -102,8 +110,7 @@ def test_fwd_acc(diff=False, mode='mzi'):
                 mats_m = Tij_cpu(p[i] - 1e-5*dp[i], s[i]).transpose(2, 0, 1)
                 Mp = block_diag(np.eye(shifts[i]), *mats_p[shifts[i]//2:shifts[i]//2+lens[i]], np.eye(N-shifts[i]-2*lens[i]))
                 Mm = block_diag(np.eye(shifts[i]), *mats_m[shifts[i]//2:shifts[i]//2+lens[i]], np.eye(N-shifts[i]-2*lens[i]))
-                u_p = u_p.dot(Mp.T)
-                u_m = u_m.dot(Mm.T)
+                u_p = u_p.dot(Mp.T); u_m = u_m.dot(Mm.T)
         du = (u_p - u_m) / 2e-5
         # Error evaluation.
         err = np.linalg.norm(u_out-u, axis=1) / np.linalg.norm(u, axis=1)
@@ -119,7 +126,8 @@ def test_fwd_acc(diff=False, mode='mzi'):
             print("[dp] err/ind   = ", '[' + "".join(np.array(['*', '.'])[(d_errT < 1e-4).astype(int)]) + ']')
     print()    
 def test_rev_acc(mode):
-    post = {'mzi': '', 'sym': '_sym'}[mode]
+    (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
+    post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
     print ("Accuracy Test: backdiff_N256"+post)
     print ("--------------------------------------")
     fwd = mod.get_function("fwdprop_N256"+post)
@@ -129,23 +137,25 @@ def test_rev_acc(mode):
         N = np.random.randint(128, 256+1); Nwarp = np.random.randint(2, 29); Nblk = int(np.ceil(B/Nwarp))
         print (f"N={N}, L={L:2d}, B={B:2d}, Nwarp={Nwarp:2d}...", end="")
         shifts = np.random.randint([N-1]*L); lens = np.random.randint((N-shifts)//2)   # Random splitter placement.
-        p = np.random.randn(L, N//2, 2).astype(np.float32); 
-        s = np.random.randn(L, N//2, {'mzi': 2, 'sym': 1}[mode]).astype(np.float32)
+        p = np.random.randn(L, N//2, n_p).astype(np.float32); 
+        s = np.random.randn(L, N//2, n_s).astype(np.float32)
         (u_in, u0) = np.random.randn(2, B, N, 2).dot([1, 1j]).astype(np.complex64)
+        if (mode == 'orth'): u_in = np.real(u_in); u0 = np.real(u0)
         ldp = p[0].size; lds = s[0].size; ldu = N
         # Send data to the GPU.
         (p_d, s_d, u_in_d, u0_d, lens_d, shifts_d) = map(cp.asarray, (p, s, u_in, u0, lens, shifts))
-        u_out_d = cp.zeros(u_in_d.shape, dtype=cp.complex64); u_in2_d = cp.zeros(u_in_d.shape, dtype=cp.complex64)
-        dJdu_in_d = cp.zeros(u_in_d.shape, dtype=cp.complex64); dp_d = cp.zeros(p_d.shape, dtype=cp.float32)
-        args_post = {'mzi': (), 'sym': (cp.bool(False),)}[mode]
-
+        u_out_d = cp.zeros(u_in_d.shape, dtype=dtype); u_in2_d = cp.zeros(u_in_d.shape, dtype=dtype)
+        dJdu_in_d = cp.zeros(u_in_d.shape, dtype=dtype); dp_d = cp.zeros(p_d.shape, dtype=cp.float32)
+        args_fwd = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, cp.int32(ldp)] + 
+                    [s_d, cp.int32(lds)][:2*(mode!='orth')] + [u_in_d, u_out_d, cp.int32(ldu)] + 
+                    [cp.bool(False)][:mode=='sym'])
         # Fwd-propagate, get gradient, then back-propagate.
-        fwd((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, cp.int32(ldp), 
-                                   s_d, cp.int32(lds), u_in_d, u_out_d, cp.int32(ldu)) + args_post)
-        dJdu_out_d = (u_out_d - u0_d)
-        rev((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, dp_d, cp.int32(ldp), 
-                                   s_d, cp.int32(lds), u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, cp.int32(ldu))
-                                   + args_post)
+        fwd((Nblk,), (32, Nwarp), tuple(args_fwd))
+        dJdu_out_d = 2*(u_out_d - u0_d)
+        args_rev = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, dp_d, cp.int32(ldp)] + 
+                    [s_d, cp.int32(lds)][:2*(mode!='orth')] + [u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, cp.int32(ldu)] + 
+                    [cp.bool(False)][:mode=='sym'])
+        rev((Nblk,), (32, Nwarp), tuple(args_rev))
         (u_out, dJdu_out, u_in2, dJdu_in2, dp) = map(cp.asnumpy, (u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, dp_d))
 
         # Error in back-propagated field.
@@ -154,12 +164,10 @@ def test_rev_acc(mode):
         def numdiff(dp):
             pp = (p + 1e-3*dp).astype(np.float32); pm = (p - 1e-3*dp).astype(np.float32)
             (pp_d, pm_d, s_d, u_in_d, u0_d, lens_d, shifts_d) = map(cp.asarray, (pp, pm, s, u_in, u0, lens, shifts))
-            u_out_d = cp.zeros(u_in_d.shape, dtype=cp.complex64)
-            fwd((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, pp_d, cp.int32(ldp), 
-                                       s_d, cp.int32(lds), u_in_d, u_out_d, cp.int32(ldu)) + args_post)
-            Jp = (cp.abs(u_out_d - u0_d)**2).sum().get()
-            fwd((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, pm_d, cp.int32(ldp), 
-                                       s_d, cp.int32(lds), u_in_d, u_out_d, cp.int32(ldu)) + args_post)
+            args_fwd[5] = pp_d;
+            fwd((Nblk,), (32, Nwarp), tuple(args_fwd))
+            Jp = (cp.abs(u_out_d - u0_d)**2).sum().get(); args_fwd[5] = pm_d;
+            fwd((Nblk,), (32, Nwarp), tuple(args_fwd))
             Jm = (cp.abs(u_out_d - u0_d)**2).sum().get()
             return (Jp - Jm) / 2e-3
         errList = []
@@ -172,37 +180,42 @@ def test_rev_acc(mode):
             print (f"FAIL!  err[dJ/du_in]={err_uin:.2e}, err[dJ/dp]={err_dp:.2e}")
     print()
 
-    dp_d.get();
-
 # Step 2: Speed Test.
 # Performance is a function of mesh size N, depth L, batch size B, and warps/block.  The latter
 # is a tuning parameter that must be swept.
 def test_fwd_speed(diff, mode='mzi'):
-    post = {'mzi': '', 'sym': '_sym'}[mode]
+    (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
+    post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
     print ("Speed Test: " + ("fwddiff_N***" if diff else "fwdprop_N***")+post)
     print ("--------------------------------------")
     def timetest(N, L, B, Nwarp):
         K = N//32
         Nblk = int(np.ceil(B/Nwarp))
         func = mod.get_function((f"fwddiff_N{N}" if diff else f"fwdprop_N{N}")+post)
-        p_d = cp.random.randn(L, 32*K, 2, dtype=np.float32);
-        s_d = cp.random.randn(L, 32*K, {'mzi': 2, 'sym': 1}[mode], dtype=np.float32)
-        in_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
+        p_d = cp.random.randn(L, 32*K, n_p, dtype=np.float32);
+        s_d = cp.random.randn(L, 32*K, n_s, dtype=np.float32)
+        if (mode == 'orth'): in_d = cp.random.randn(B, 32*2*K, dtype=np.float32)
+        else: in_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
         shifts_d = cp.arange(L, dtype=cp.int32) % 2; lens_d = (32*K) - shifts_d;
         out_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
         if diff:
-            dp_d = cp.random.randn(L, 32*K, 2, dtype=np.float32); dout_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
-            din_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
-        ldp = (32*K)*2; lds = (32*K)*({'mzi': 2, 'sym': 1}[mode]); ldu = 2*(32*K)
+            dp_d = cp.random.randn(L, 32*K, 2, dtype=np.float32); 
+            if (mode == 'orth'):
+                dout_d = cp.zeros([B, 32*2*K], dtype=np.float32); din_d = cp.random.randn(B, 32*2*K, dtype=np.float32)
+            else:
+                dout_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
+                din_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
+        else:
+            (dp_d, dout_d, din_d) = (None, None, None)
+        ldp = (32*K)*n_p; lds = (32*K)*n_s; ldu = 2*(32*K)
         (N_d, L_d, B_d, ldp_d, lds_d, ldu_d) = map(cp.int32, (N, L, B, ldp, lds, ldu))
         t = 0; ct = 1
-        args = ([N_d, L_d, B_d, lens_d, shifts_d] + 
-                ([p_d, dp_d, ldp_d, s_d, lds_d, in_d, din_d, out_d, dout_d, ldu_d] if diff else
-                 [p_d, ldp_d, s_d, lds_d, in_d, out_d, ldu_d]) + {'mzi': [], 'sym': [cp.bool(False)]}[mode])
+        args = ([N_d, L_d, B_d, lens_d, shifts_d, p_d] + [dp_d][:diff] + [ldp_d] + [s_d, lds_d][:2*(mode!='orth')] + 
+                ([in_d, din_d, out_d, dout_d, ldu_d] if diff else [in_d, out_d, ldu_d]) + [cp.bool(False)][:mode=='sym'])
         while (t < 1e-2):
             cp.cuda.runtime.deviceSynchronize(); t = time()
             for i in range(ct):
-                func((Nblk,), (32,Nwarp), args)
+                func((Nblk,), (32, Nwarp), tuple(args))
             cp.cuda.runtime.deviceSynchronize(); t = time() - t; ct *= 2
         return t / (ct/2)
 
@@ -255,31 +268,39 @@ def test_fwd_speed(diff, mode='mzi'):
     plt.savefig("test-fig1.pdf", format="pdf")
 
 def test_rev_speed(mode):
-    post = {'mzi': '', 'sym': '_sym'}[mode]; ns = {'mzi': 2, 'sym': 1}[mode]
+    (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
+    post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
     print ("Speed Test: backdiff_N***"+post)
     print ("--------------------------------------")
     def timetest(N, L, B, Nwarp):
         K = N//32
         Nblk = int(np.ceil(B/Nwarp))
         func = mod.get_function(f"backdiff_N{N}"+post)
-        p_d = cp.random.randn(L, 32*K, 2, dtype=np.float32); 
-        s_d = cp.random.randn(L, 32*K, ns, dtype=np.float32)
-        u_out_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
-        dJdu_out_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
+        p_d = cp.random.randn(L, 32*K, n_p, dtype=np.float32); s_d = cp.random.randn(L, 32*K, n_s, dtype=np.float32)
+        if (mode == 'orth'):
+            u_out_d = cp.random.randn(B, 32*2*K, dtype=np.float32)
+            dJdu_out_d = cp.random.randn(B, 32*2*K, dtype=np.float32)
+        else:
+            u_out_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
+            dJdu_out_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
         shifts_d = cp.arange(L, dtype=cp.int32) % 2; lens_d = (32*K) - shifts_d;
-        u_in_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
-        dJdu_in_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
-        dp_d = cp.random.randn(L, 32*K, 2, dtype=np.float32)
-        args_post = {'mzi': (), 'sym': (cp.bool(False),)}[mode]
+        u_in_d = cp.zeros([B, 32*2*K], dtype=dtype)
+        dJdu_in_d = cp.zeros([B, 32*2*K], dtype=dtype)
+        dp_d = cp.random.randn(L, 32*K, n_p, dtype=np.float32)
+        args_post = {'mzi': (), 'sym': (cp.bool(False),), 'orth': ()}[mode]
 
-        ldp = (32*K)*2; lds = (32*K)*ns; ldu = 2*(32*K)
+        ldp = (32*K)*n_p; lds = (32*K)*n_s; ldu = 2*(32*K)
         t = 0; ct = 1
+        args = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, dp_d, cp.int32(ldp)] +
+                [s_d, cp.int32(lds)][:2*(mode!='orth')] + [u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu)] + 
+                [cp.bool(False)][:mode=='sym'])
         while (t < 1e-2):
             cp.cuda.runtime.deviceSynchronize(); t = time()
             for i in range(ct):
-                func((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, 
-                                            p_d, dp_d, cp.int32(ldp), s_d, cp.int32(lds), 
-                                            u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu)) + args_post)
+                func((Nblk,), (32, Nwarp), tuple(args))
+                #func((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, 
+                #                            p_d, dp_d, cp.int32(ldp), s_d, cp.int32(lds), 
+                #                            u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu)) + args_post)
             cp.cuda.runtime.deviceSynchronize(); t = time() - t; ct *= 2
         return t / (ct/2)
 

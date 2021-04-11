@@ -12,7 +12,7 @@
 #define CROSSING_TYPE  SYM
 
 // Inference / forward propagation of fields, no derivative terms.  
-// (K=1 and K=2 optimized for 24 smem, others for 48k smem)
+// (K=1 and K=2 optimized for 24k smem, others for 48k smem)
 //*
 #define K 1
 #define L0 50
