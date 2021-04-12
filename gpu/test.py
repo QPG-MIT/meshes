@@ -9,7 +9,6 @@
 #   04/06/21: Reverse differentiation and CPU timing comparison.
 #   04/10/21: Added symmetric and orthogonal representations.
 
-
 import numpy as np
 import cupy as cp
 from time import time
@@ -17,39 +16,6 @@ from scipy.linalg import block_diag
 import matplotlib.pyplot as plt
 import sys
 from cupy_backends.cuda.api.driver import CUDADriverError
-
-
-# Command line options.
-acc   = ('-a'  in sys.argv)
-speed = ('-s'  in sys.argv)
-inf   = ('inf' in sys.argv)
-fd    = ('fd'  in sys.argv)
-bd    = ('bd'  in sys.argv)
-cpu   = ('cpu' in sys.argv)
-mzi   = ('-mzi' in sys.argv)
-sym   = ('-sym' in sys.argv)
-orth  = ('-orth' in sys.argv)
-
-if (not (acc or speed) or not (inf or fd or bd or cpu)):
-    print ("Usage: python test.py [-a] [-s] [-mzi] [-sym] [-orth] [inf] [fwd] [rev] [cpu]")
-    print ("[-a] Test accuracy.")
-    print ("[-s] Test speed.")
-    print ("[inf] Test inference function.")
-    print ("[fd]  Test forward error propagation.")
-    print ("[bd] Test error back-propagation.")
-    print ("[-mzi] Standard MZI")
-    print ("[-sym] Symmetric crossing")
-    print ("[-orth] Orthogonal (real) crossing (not yet supported).")
-    exit()
-    
-assert (mzi + sym + orth <= 1)
-mode = 'mzi'
-if sym: mode = 'sym'
-if orth: mode = 'orth'
-
-if (inf or fd or bd):
-    print ("Loading module.\n")
-    mod = cp.RawModule(path="meshprop.cubin")
     
 # Step 1: Accuracy Test.
 # Runs a bunch of parameters, checks GPU result against block-diagonal matrix multiplication.
@@ -185,7 +151,8 @@ def test_rev_acc(mode):
 # is a tuning parameter that must be swept.
 def test_fwd_speed(diff, mode='mzi'):
     (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
-    post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
+    post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode];
+    f = open("benchmarks/"+("fwddiff" if diff else "fwdprop")+post+".txt", 'w')
     print ("Speed Test: " + ("fwddiff_N***" if diff else "fwdprop_N***")+post)
     print ("--------------------------------------")
     def timetest(N, L, B, Nwarp):
@@ -219,8 +186,10 @@ def test_fwd_speed(diff, mode='mzi'):
             cp.cuda.runtime.deviceSynchronize(); t = time() - t; ct *= 2
         return t / (ct/2)
 
-    flops1 = np.zeros([8, 32])*np.nan; flops2 = np.zeros([8, 32])*np.nan
-    wsList = np.zeros([2, 8], dtype=np.int)
+    r1 = np.zeros([8, 32])*np.nan; r2 = np.zeros([8, 32])*np.nan
+    wsList = np.zeros([2, 8], dtype=np.int); flops_fact = (8 if (mode=='orth') else 32)*(3 if diff else 1);
+    
+    f.write("N\tL\tB\twarps\tGC/s\tGFLOP/s\tt_mv\tt_mm\n")
 
     print ("Square Matrices: N x N x N")
     Nlist = [64, 128, 192, 256, 320, 384, 512, 640]
@@ -231,9 +200,10 @@ def test_fwd_speed(diff, mode='mzi'):
                 t = timetest(N, N, N, ws); 
             except CUDADriverError as e:
                 print ("x" + " "*(31-j), end=""); break
-            flops1[i, j] = (3 if diff else 1) * (32 * (N*N*N/2) / t) / 1e9; print (".", end="", flush=True)
-        j = np.argmax(np.nan_to_num(flops1[i])); wsList[0, i] = j+1
-        print(f" {flops1[i,j]:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
+            r1[i, j] = ((N*N*N/2) / t) / 1e9; print (".", end="", flush=True)
+        j = np.argmax(np.nan_to_num(r1[i])); wsList[0, i] = j+1
+        f.write(f"{N}\t{N}\t{N}\t{j+1}\t{r1[i,j]:.2f}\t{r1[i,j]*flops_fact:.1f}\t{t/N:.1e}\t{t:.2e}\n")
+        print(f" {r1[i,j]:6.1f} GMZI/s = {r1[i,j]*flops_fact:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
     print ("Fat Matrices: N x N x 4096")
     for (i, N) in enumerate(Nlist):
         print(f"N = {N:4d}: ", end="")
@@ -242,12 +212,13 @@ def test_fwd_speed(diff, mode='mzi'):
                 t = timetest(N, N, 4096, ws); 
             except CUDADriverError as e:
                 print ("x" + " "*(31-j), end=""); break
-            flops2[i, j] = (3 if diff else 1) * (32 * (N*N*4096/2) / t) / 1e9; print (".", end="", flush=True)
-        j = np.argmax(np.nan_to_num(flops2[i])); wsList[1, i] = j+1
-        print(f" {flops2[i,j]:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
+            r2[i, j] = ((N*N*4096/2) / t) / 1e9; print (".", end="", flush=True)
+        j = np.argmax(np.nan_to_num(r2[i])); wsList[1, i] = j+1
+        f.write(f"{N}\t{N}\t4096\t{j+1}\t{r2[i,j]:.2f}\t{r2[i,j]*flops_fact:.1f}\t{t/4096:.1e}\t{t:.2e}\n")
+        print(f" {r2[i,j]:6.1f} GMZI/s = {r2[i,j]*flops_fact:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
     print()
-
-    np.savetxt("tuned_warpsize.txt", np.concatenate([np.array([Nlist]), wsList], axis=0).T, delimiter='\t', fmt='%d')
+    f.close()
+    return
 
     (f, (ax1, ax2)) = plt.subplots(1, 2, figsize=(9, 4.5), sharex=True, sharey=True)
     (flops_mesh1, flops_mesh2) = ([], [])
@@ -270,6 +241,7 @@ def test_fwd_speed(diff, mode='mzi'):
 def test_rev_speed(mode):
     (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
     post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
+    f = open("benchmarks/backdiff"+post+".txt", 'w')
     print ("Speed Test: backdiff_N***"+post)
     print ("--------------------------------------")
     def timetest(N, L, B, Nwarp):
@@ -298,14 +270,13 @@ def test_rev_speed(mode):
             cp.cuda.runtime.deviceSynchronize(); t = time()
             for i in range(ct):
                 func((Nblk,), (32, Nwarp), tuple(args))
-                #func((Nblk,), (32, Nwarp), (cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, 
-                #                            p_d, dp_d, cp.int32(ldp), s_d, cp.int32(lds), 
-                #                            u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu)) + args_post)
             cp.cuda.runtime.deviceSynchronize(); t = time() - t; ct *= 2
         return t / (ct/2)
 
-    flops1 = np.zeros([8, 32])*np.nan; flops2 = np.zeros([8, 32])*np.nan
-    wsList = np.zeros([2, 8], dtype=np.int)
+    r1 = np.zeros([8, 32])*np.nan; r2 = np.zeros([8, 32])*np.nan
+    wsList = np.zeros([2, 8], dtype=np.int); flops_fact = (8 if (mode=='orth') else 32)*3;
+    
+    f.write("N\tL\tB\twarps\tGC/s\tGFLOP/s\tt_mv\tt_mm\n")
 
     print ("Square Matrices: N x N x N")
     Nlist = [64, 128, 192, 256, 320, 384, 512, 640]
@@ -316,9 +287,10 @@ def test_rev_speed(mode):
                 t = timetest(N, N, N, ws); 
             except CUDADriverError as e:
                 print ("x" + " "*(31-j), end=""); break
-            flops1[i, j] = 3 * (32 * (N*N*N/2) / t) / 1e9; print (".", end="", flush=True)
-        j = np.argmax(np.nan_to_num(flops1[i])); wsList[0, i] = j+1
-        print(f" {flops1[i,j]:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
+            r1[i, j] = ((N*N*N/2) / t) / 1e9; print (".", end="", flush=True)
+        j = np.argmax(np.nan_to_num(r1[i])); wsList[0, i] = j+1
+        f.write(f"{N}\t{N}\t{N}\t{j+1}\t{r1[i,j]:.2f}\t{r1[i,j]*flops_fact:.1f}\t{t/N:.1e}\t{t:.2e}\n")
+        print(f" {r1[i,j]:6.1f} GMZI/s = {r1[i,j]*flops_fact:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
     print ("Fat Matrices: N x N x 4096")
     for (i, N) in enumerate(Nlist):
         print(f"N = {N:4d}: ", end="")
@@ -327,13 +299,12 @@ def test_rev_speed(mode):
                 t = timetest(N, N, 4096, ws); 
             except CUDADriverError as e:
                 print ("x" + " "*(31-j), end=""); break
-            flops2[i, j] = 3 * (32 * (N*N*4096/2) / t) / 1e9; print (".", end="", flush=True)
-        j = np.argmax(np.nan_to_num(flops2[i])); wsList[1, i] = j+1
-        print(f" {flops2[i,j]:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
+            r2[i, j] = ((N*N*4096/2) / t) / 1e9; print (".", end="", flush=True)
+        j = np.argmax(np.nan_to_num(r2[i])); wsList[1, i] = j+1
+        f.write(f"{N}\t{N}\t4096\t{j+1}\t{r2[i,j]:.2f}\t{r2[i,j]*flops_fact:.1f}\t{t/4096:.1e}\t{t:.2e}\n")
+        print(f" {r2[i,j]:6.1f} GMZI/s = {r2[i,j]*flops_fact:6.1f} GFLOP/s [{j+1:2d}*32={32*(j+1):4d} threads]")
     print()
-        
-    np.savetxt("tuned_warpsize.txt", np.concatenate([np.array([Nlist]), wsList], axis=0).T, delimiter='\t', fmt='%d')
-
+    f.close()
     return
     
     (f, (ax1, ax2)) = plt.subplots(1, 2, figsize=(9, 4.5), sharex=True, sharey=True)
@@ -360,43 +331,161 @@ def test_cpu_speed():
     print ("Speed Test: meshes/mesh.py (NumPy)")
     print ("--------------------------------------")
     def time_clem(N, B):
-        U = np.random.randn(N, B).astype(np.complex)
-        V = np.random.randn(N, B).astype(np.complex)
+        U  = np.random.randn(N, B).astype(np.complex)
+        dU = np.random.randn(N, B).astype(np.complex)
+        V  = np.random.randn(N, B).astype(np.complex)
         clem = ms.ClementsNetwork(N=N)
         clem.p_splitter = np.random.randn(N*(N-1)//2, 2)
         clem.p_phase[:] = np.random.randn(N**2)
+        dp = np.random.randn(*clem.p_phase.shape)
 
         t = time(); n = 0
         while (time() - t < 0.2):
             clem.dot(U); n += 1
         t_inf = (time() - t)/n
+        
+        t = time(); n = 0
+        while (time() - t < 0.2):
+            clem.dot(U, dp=dp, dv=dU); n += 1
+        t_fd = (time() - t)/n
+        
         t = time(); n = 0
         while (time() - t < 0.2):
             clem.grad_phi(U, V); n += 1
         t_bd = (time() - t)/n - t_inf
+        
+        mzi_inf = (N*N*B/2) / t_inf / 1e9; flops_inf =   32*mzi_inf; 
+        mzi_fd  = (N*N*B/2) / t_fd  / 1e9; flops_fd  = 3*32*mzi_fd
+        mzi_bd  = (N*N*B/2) / t_bd  / 1e9; flops_bd  = 3*32*mzi_bd
 
-        flops_inf = 32 * (N*N*N/2); flops_bd = 3*flops_inf
+        return (t_inf, t_fd, t_bd, mzi_inf, mzi_fd, mzi_bd, flops_inf, flops_fd, flops_bd)
 
-        return (t_inf, t_bd, flops_inf/t_inf/1e9, flops_bd/t_bd/1e9)
+    f1 = open("benchmarks/fwdprop_cpu.txt", 'w')
+    f2 = open("benchmarks/fwddiff_cpu.txt", 'w')
+    f3 = open("benchmarks/backdiff_cpu.txt", 'w')
+    f1.write("N\tL\tB\tGC/s\tGFLOP/s\tt_mv\tt_mm\n")
+    f2.write("N\tL\tB\tGC/s\tGFLOP/s\tt_mv\tt_mm\n")
+    f3.write("N\tL\tB\tGC/s\tGFLOP/s\tt_mv\tt_mm\n")
 
     print ("Square Matrices: N x N x N")
     for N in [64, 128, 192, 256, 320, 384, 512, 640]:
-        (t_inf, t_bd, flops_inf, flops_bd) = time_clem(N, N)
-        print (f"N = {N:3d}:   {flops_inf:.3f} GFLOP/s (fwdprop, t={t_inf:.1e}s) | " + 
-               f"{flops_bd:.3f} GFLOP/s (backprop, t={t_inf:.1e}s)")    
+        (t_inf, t_fd, t_bd, mzi_inf, mzi_fd, mzi_bd, flops_inf, flops_fd, flops_bd) = time_clem(N, N)
+        print (f"N = {N:3d}:   " + 
+               f"[inf] {flops_inf:.3f} GFLOP/s    " + 
+               f"[fd] {flops_fd:.3f} GFLOP/s    " + 
+               f"[bd] {flops_bd:.3f} GFLOP/s    ")
+        f1.write(f"{N}\t{N}\t{N}\t{mzi_inf:.4f}\t{flops_inf:.3f}\t{t_inf/N:.1e}\t{t_inf:.2e}\n")
+        f2.write(f"{N}\t{N}\t{N}\t{mzi_fd:.4f}\t{flops_fd:.3f}\t{t_fd/N:.1e}\t{t_fd:.2e}\n")
+        f3.write(f"{N}\t{N}\t{N}\t{mzi_bd:.4f}\t{flops_bd:.3f}\t{t_bd/N:.1e}\t{t_bd:.2e}\n")
+    print ("Fat Matrices: N x N x 1024")
+    for N in [64, 128, 192, 256, 320, 384, 512, 640]:
+        (t_inf, t_fd, t_bd, mzi_inf, mzi_fd, mzi_bd, flops_inf, flops_fd, flops_bd) = time_clem(N, 1024)
+        print (f"N = {N:3d}:   " + 
+               f"[inf] {flops_inf:.3f} GFLOP/s    " + 
+               f"[fd] {flops_fd:.3f} GFLOP/s    " + 
+               f"[bd] {flops_bd:.3f} GFLOP/s    ")
+        f1.write(f"{N}\t{N}\t{1024}\t{mzi_inf:.4f}\t{flops_inf:.3f}\t{t_inf/N:.1e}\t{t_inf:.2e}\n")
+        f2.write(f"{N}\t{N}\t{1024}\t{mzi_fd:.4f}\t{flops_fd:.3f}\t{t_fd/N:.1e}\t{t_fd:.2e}\n")
+        f3.write(f"{N}\t{N}\t{1024}\t{mzi_bd:.4f}\t{flops_bd:.3f}\t{t_bd/N:.1e}\t{t_bd:.2e}\n")
+        
+    f1.close(); f2.close(); f3.close()
+
 
         
-# Options
-if inf:
-    if acc:   test_fwd_acc(False, mode)
-    if speed: test_fwd_speed(False, mode)  
-if fd:
-    if acc:   test_fwd_acc(True, mode)
-    if speed: test_fwd_speed(True, mode)  
-if bd:
-    if acc:   test_rev_acc(mode)
-    if speed: test_rev_speed(mode)
-if cpu:
-    assert mode == 'mzi'
+def test_blas():
+    print ("Speed Test: BLAS SGEMM/CGEMM")
+    print ("--------------------------------------")
+
+    def timetest(N, K, dtype):
+        A = cp.random.randn(N, N).astype(dtype)
+        B = cp.random.randn(N, K).astype(dtype)
+        C = cp.random.randn(N, K).astype(dtype)
+        t = 0; ct = 1
+        while (t < 1e-2):
+            cp.cuda.runtime.deviceSynchronize(); t = time()
+            for i in range(ct):
+                cp.dot(A, B, out=C)
+            cp.cuda.runtime.deviceSynchronize(); t = time() - t; ct *= 2
+        return t / (ct/2)
+
+    for (Nlist, post) in zip([[64, 128, 192, 256, 320, 384, 512, 640], range(16, 1025, 16)], ['', '_fine']):
+        timetest(256, 256, cp.float32);   # Warm up the GPU
+
+        print ("SGEMM [float32]")
+        def printf(f, s): f.write(s+'\n'); print(s)
+        with open(f"benchmarks/sgemm{post}.txt", 'w') as f:
+            printf(f, "N\tL\tB\tGFLOP/s\tt_mv\tt_mm")
+            print ("Square Matrices: N x N x N")
+            for (i, N) in enumerate(Nlist):
+                t = timetest(N, N, cp.float32); flops = 2*N*N*N/t / 1e9
+                printf(f, f"{N}\t{N}\t{N}\t{flops:.1f}\t{t/N:.1e}\t{t:.2e}")
+            print ("Fat Matrices: N x N x 4096")
+            for (i, N) in enumerate(Nlist):
+                t = timetest(N, 4096, cp.float32); flops = 2*N*N*4096/t / 1e9
+                printf(f, f"{N}\t{N}\t{4096}\t{flops:.1f}\t{t/4096:.1e}\t{t:.2e}")
+        print ("CGEMM [complex64]")
+        with open(f"benchmarks/cgemm{post}.txt", 'w') as f:
+            printf(f, "N\tL\tB\tGFLOP/s\tt_mv\tt_mm")
+            print ("Square Matrices: N x N x N")
+            for (i, N) in enumerate(Nlist):
+                t = timetest(N, N, cp.complex64); flops = 8*N*N*N/t / 1e9
+                printf(f, f"{N}\t{N}\t{N}\t{flops:.1f}\t{t/N:.1e}\t{t:.2e}")
+            print ("Fat Matrices: N x N x 4096")
+            for (i, N) in enumerate(Nlist):
+                t = timetest(N, 4096, cp.complex64); flops = 8*N*N*4096/t / 1e9
+                printf(f, f"{N}\t{N}\t{4096}\t{flops:.1f}\t{t/4096:.1e}\t{t:.2e}")
+        print()
+
+        
+        
+# Command line options.
+acc   = ('-a'  in sys.argv)
+speed = ('-s'  in sys.argv)
+inf   = ('inf' in sys.argv)
+fd    = ('fd'  in sys.argv)
+bd    = ('bd'  in sys.argv)
+cpu   = ('cpu' in sys.argv)
+mzi   = ('-mzi' in sys.argv)
+sym   = ('-sym' in sys.argv)
+orth  = ('-orth' in sys.argv)
+blas  = ('blas' in sys.argv)
+        
+if (not (acc or speed) or not (inf or fd or bd or cpu or blas) or not (blas or mzi or sym or orth)):
+    print ("Usage: python test.py [-a] [-s] [-mzi] [-sym] [-orth] [inf] [fwd] [rev] [cpu] [blas]")
+    print ("-a    Test accuracy.")
+    print ("-s    Test speed.")
+    print ("inf   Test inference function.")
+    print ("fd    Test forward error propagation.")
+    print ("bd    Test error back-propagation.")
+    print ("-mzi  Standard MZI")
+    print ("-sym  Symmetric crossing")
+    print ("-orth Orthogonal (real) crossing")
+    print ("cpu   Test CPU function (-s only)")
+    print ("blas  Test performance of BLAS GEMM (-s only)")
+    exit()
+    
+modes = ['mzi'][:mzi] + ['sym'][:sym] + ['orth'][:orth]
+
+if (inf or fd or bd):
+    print ("Loading module.\n")
+    mod = cp.RawModule(path="meshprop.cubin")
+
+# Benchmark GPU / CPU
+for mode in modes:
+    if inf:
+        if acc:   test_fwd_acc(False, mode)
+        if speed: test_fwd_speed(False, mode)  
+    if fd:
+        if acc:   test_fwd_acc(True, mode)
+        if speed: test_fwd_speed(True, mode)  
+    if bd:
+        if acc:   test_rev_acc(mode)
+        if speed: test_rev_speed(mode)
+    if cpu:
+        assert mode == 'mzi'
+        if acc:   raise NotImplementedError()
+        if speed: test_cpu_speed()
+            
+if (blas):
     if acc:   raise NotImplementedError()
-    if speed: test_cpu_speed()
+    if speed: test_blas()

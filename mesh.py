@@ -212,17 +212,38 @@ class StructuredMeshNetwork(MeshNetwork):
         else:
             return (self._get_p_crossing(p_phase), self._get_phi_out(p_phase), p_splitter)
 
-    def dot(self, v, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None):
+    def dot(self, v, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None, dp=None, dv=None):
         v = np.array(v, dtype=np.complex)
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
         # Loop through the crossings, one row at a time.  Then apply the final phase shifts.
-        if (self.is_phase and self.phi_pos == 'in'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-        for (i, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
-            v = v if (self.perm[i] is None) else v[self.perm[i]]
-            v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L])
-        v = v if (self.perm[-1] is None) else v[self.perm[-1]]
-        if (self.is_phase and self.phi_pos == 'out'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-        return v
+        if (dp is None) and (dv is None):
+            # Simple inference
+            if (self.is_phase and self.phi_pos == 'in'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+            for (i, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
+                v = v if (self.perm[i] is None) else v[self.perm[i]]
+                v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L])
+            v = v if (self.perm[-1] is None) else v[self.perm[-1]]
+            if (self.is_phase and self.phi_pos == 'out'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+            return v
+        else:
+            # Inference plus forward error propagation.
+            dv = v*0 if (dv is None) else np.array(dv, dtype=np.complex)
+            dp = p_phase if (dp is None) else dp; dphi_out = dp[self.n_cr*self.X.n_phase:]
+            dp_crossing = dp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
+            if (self.is_phase):
+                phi_out = phi_out.reshape((self.N,) + (1,)*(v.ndim-1)); dphi_out = dphi_out.reshape((self.N,) + (1,)*(v.ndim-1))
+            if (self.is_phase and self.phi_pos == 'in'): 
+                v *= np.exp(1j*phi_out); dv *= np.exp(1j*phi_out); dv += 1j*dphi_out*v
+            for (i, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
+                v = v if (self.perm[i] is None) else v[self.perm[i]]
+                dv = dv if (self.perm[i] is None) else dv[self.perm[i]]
+                (v[s:s+2*L], dv[s:s+2*L]) = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L], 
+                                                       dp=dp_crossing[i1:i2], dx=dv[s:s+2*L])
+            v = v if (self.perm[-1] is None) else v[self.perm[-1]]
+            dv = dv if (self.perm[-1] is None) else dv[self.perm[-1]]
+            if (self.is_phase and self.phi_pos == 'out'): 
+                v *= np.exp(1j*phi_out); dv *= np.exp(1j*phi_out); dv += 1j*dphi_out*v
+            return (v, dv)
 
     def _L2norm_fn(self, J):
         def f(U):

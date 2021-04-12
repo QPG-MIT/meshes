@@ -98,20 +98,33 @@ class Crossing:
             M[:, i:i+2] = M[:, i:i+2].dot(self.T(p_phase_i, p_splitter_i))
         return M
 
-    def dot(self, p_phase, p_splitter, x, dag=False) -> np.ndarray:
+    def dot(self, p_phase, p_splitter, x, dag=False, dp=None, dx=None) -> np.ndarray:
         r"""
         Performs the dot product T*x.  Can be used for a single splitter or an array.
         :param p_phase: Array of size (n_phase,) or (M/2, n_phase)
         :param p_splitter: Array of size (n_splitter,) or (M/2, n_splitter)
         :param x: Array of size (M,) or (M, N)
         :param dag: If True, use the Hermitian conjugate (T^dagger).
-        :return: Array of size (M,) or (M, N)
+        :param dp: Derivative of p_phase
+        :param dx: Derivative of x
+        :return: If no derivatives specified, array [y = Tx] of size (M,) or (M, N).  Otherwise, two arrays [y, dy].
         """
         if (x.ndim == 1):
-            return self.dot(p_phase, p_splitter, np.outer(x, 1))[:, 0]
+            out = self.dot(p_phase, p_splitter, np.outer(x, 1), dag, dp)
+            return out[:, 0] if (dp is None) else (out[0][:, 0], out[1][:, 0])
         (m, n) = x.shape; T = (self.Tdag if dag else self.T)(p_phase, p_splitter).reshape([2,2,m//2]).transpose((2,0,1))
-        return np.einsum('ijk,ikl->ijl', T, x.reshape([m//2, 2, n])).reshape(x.shape)
-
+        y = (np.einsum('ijk,ikl->ijl', T, x.reshape([m//2, 2, n])).reshape(x.shape))
+        if (dp is None) and (dx is None):
+            return y
+        else:
+            (dy1, dy2) = (0, 0)
+            if (dp is not None):
+                tr = (3, 0, 2, 1) if dag else (3, 0, 1, 2); dT = self.dT(p_phase, p_splitter).transpose(*tr)
+                dT = np.einsum('ijkl,ij->ikl', dT.conj() if dag else dT, dp)
+                dy1 = np.einsum('ijk,ikl->ijl', dT, x.reshape([m//2, 2, n])).reshape(x.shape)
+            if (dx is not None):
+                dy2 = np.einsum('ijk,ikl->ijl', T, dx.reshape([m//2, 2, n])).reshape(x.shape)
+            return (y, dy1+dy2)
 
     def rdot(self, p_phase, p_splitter, y, dag=False) -> np.ndarray:
         r"""
