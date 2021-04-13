@@ -8,6 +8,7 @@
 #   03/03/21: Extended to general meshes, including Reck.  Moved to this file.
 #   03/06/21: JIT-ed my direct method code and added it here.
 #   03/22/21: Added Saumil's local EC method (see arXiv:2103.04993).
+#   04/13/21: Replaced 2*theta -> theta in phase shifters for consistency in notation.
 
 import numpy as np
 from numba import njit
@@ -27,7 +28,7 @@ def Tsolve_abc(p_splitter, a, b, c, n, sign):
         b1p = b1 * np.exp(1j*phi); (u1, u2) = (b1p*Cp + 1j*b2*Sp, 1j*b1p*Sp + b2*Cp)
         theta = np.angle(c - u2*a2) - np.angle(u1*a1)
         #print (np.abs(c - u1*a1*np.exp(1j*theta) - u2*a2))
-    return np.array([theta/2, phi])
+    return np.array([theta, phi])
 @njit
 def Tsolve_abc_out(p_splitter, a, b, c, n, sign):
     (Cp, C) = np.cos(p_splitter + np.pi/4); (Sp, S) = np.sin(p_splitter + np.pi/4)
@@ -39,19 +40,19 @@ def Tsolve_abc_out(p_splitter, a, b, c, n, sign):
         a2p = a2 * np.exp(1j*phi); (u1, u2) = (a1*C + 1j*a2p*S, 1j*a1*S + a2p*C)
         theta = np.angle(c - b2*u2) - np.angle(b1*u1)
         #print (np.abs(c - b1*u1*np.exp(1j*theta) - b2*u2))
-    return np.array([theta/2, phi])
+    return np.array([theta, phi])
 # Numba-accelerated functions for T(theta, phi).
 @njit
 def T_mzi(p, s):
-    (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta])
+    (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
     (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
-    return np.exp(1j*theta) * np.array([[f * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
-                                        [f * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
+    return np.exp(1j*theta/2) * np.array([[f * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
+                                          [f * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
 @njit
 def T_mzi_o(p, s):
-    (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta])
+    (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
     (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
-    return np.exp(1j*theta) * np.array([[    (1j*S*Cm - C*Sp),       ( 1j*C*Cp - S*Sm)],
+    return np.exp(1j*theta/2) * np.array([[    (1j*S*Cm - C*Sp),       ( 1j*C*Cp - S*Sm)],
                                         [f * (1j*C*Cp + S*Sm),   f * (-1j*S*Cm - C*Sp)]])
 
 @njit
@@ -60,10 +61,10 @@ def Tsolve_11(T, p_splitter):
     Cp = np.cos(alpha+beta); Cm = np.cos(alpha-beta); Sp = np.sin(alpha+beta); Sm = np.sin(alpha-beta)
     # Input target T = T[0, 0]
     S2 = (np.abs(T)**2 - Sp**2) / (Cm**2 - Sp**2)
-    theta = np.arcsin(np.sqrt(np.minimum(np.maximum(S2, 0.), 1.)))
-    if (np.isnan(theta)): theta = 0.
-    phi = np.angle(T) - np.angle(1j*Cm*np.sin(theta) - np.cos(theta)*Sp) - theta
-    return np.array([theta, phi])
+    theta2 = np.arcsin(np.sqrt(np.minimum(np.maximum(S2, 0.), 1.)))
+    if (np.isnan(theta2)): theta2 = 0.
+    phi = np.angle(T) - np.angle(1j*Cm*np.sin(theta2) - np.cos(theta2)*Sp) - theta2
+    return np.array([theta2*2, phi])
 
 
 

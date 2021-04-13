@@ -251,7 +251,7 @@ __syncthreads(); \
               Tij_identity(&T[i1_T][i2_T][i3_T], (complex64 *) 0))
 #define load_T_sym \
     matrix_io(IDX_PS(2, 1), Tij_mzi_sym(&p[idx_p], (float *) 0, &s[idx_s], \
-                                        &T[i1_T][i2_T][i3_T], (float *) 0, cartesian, false), \
+                                        &T[i1_T][i2_T][i3_T], (float *) 0, mode, false), \
               Tij_identity_sym(&T[i1_T][i2_T][i3_T], (float *) 0))
 #define load_T_orth \
     matrix_io(IDX_P(1), Tij_mzi_orth(&p[idx_p], (float *) 0, &T[i1_T][i2_T][i3_T], (float *) 0, false), \
@@ -262,7 +262,7 @@ __syncthreads(); \
               Tij_identity(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]))
 #define load_T_dT_sym \
     matrix_io(IDX_PS(2, 1), Tij_mzi_sym(&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T],  &dT[i1_T][i2_T][i3_T], \
-                          cartesian, true), \
+                          mode, true), \
               Tij_identity_sym(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]))
 #define load_T_dT_orth \
     matrix_io(IDX_P(1), Tij_mzi_orth(&p[idx_p], &dp[idx_p], &T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T], true), \
@@ -273,7 +273,7 @@ __syncthreads(); \
               Tij_identity(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]))
 #define load_T_dT_bk_sym \
     matrix_io(IDX_PS(2, 1), Tij_mzi_sym(&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], \
-                          cartesian, false), \
+                          mode, false), \
               Tij_identity_sym(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]))
 #define load_T_dT_bk_orth \
     matrix_io(IDX_P(1), Tij_mzi_orth(&p[idx_p], &dp[idx_p], &T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T], false), \

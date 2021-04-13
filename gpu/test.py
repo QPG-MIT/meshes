@@ -42,12 +42,11 @@ def test_fwd_acc(diff=False, mode='mzi'):
         (p_d, dp_d, s_d) = [cp.asarray(x, dtype=cp.float32) for x in (p, dp, s)]
         (N_d, L_d, B_d, ldp_d, lds_d, ldu_d) = map(cp.int32, (N, L, B, ldp, lds, ldu))
         in_d = cp.asarray(u_in, dtype=dtype); out_d = cp.asarray(in_d*0); 
-        din_d = cp.asarray(du_in, dtype=dtype); dout_d = cp.asarray(din_d*0)
-        args = ([N_d, L_d, B_d, lens_d, shifts_d, p_d] + [dp_d][:diff] + [ldp_d] + [s_d, lds_d][:2*(mode!='orth')] + 
-                [in_d] + [din_d][:diff] + [out_d] + [dout_d][:diff] + [ldu_d] + [cp.bool(False)][:mode=='sym'])
-        #args = ([N_d, L_d, B_d, lens_d, shifts_d] + 
-        #        ([p_d, dp_d, ldp_d, s_d, lds_d, in_d, din_d, out_d, dout_d, ldu_d] if diff else
-        #         [p_d, ldp_d, s_d, lds_d, in_d, out_d, ldu_d]) + {'mzi': [], 'sym': [cp.bool(False)]}[mode])
+        din_d = cp.asarray(du_in, dtype=dtype); dout_d = cp.asarray(din_d*0); mode_d = cp.int32(0)
+        if diff:
+            args = [N_d, L_d, B_d, lens_d, shifts_d, p_d, dp_d, ldp_d, s_d, lds_d, in_d, din_d, out_d, dout_d, ldu_d, mode_d]
+        else:
+            args = [N_d, L_d, B_d, lens_d, shifts_d, p_d, ldp_d, s_d, lds_d, in_d, out_d, ldu_d, mode_d]
         func((Nblk,), (32,Nwarp), tuple(args))
         u_out = out_d.get(); du_out = dout_d.get()
         # CPU code for comparison.
@@ -113,14 +112,14 @@ def test_rev_acc(mode):
         u_out_d = cp.zeros(u_in_d.shape, dtype=dtype); u_in2_d = cp.zeros(u_in_d.shape, dtype=dtype)
         dJdu_in_d = cp.zeros(u_in_d.shape, dtype=dtype); dp_d = cp.zeros(p_d.shape, dtype=cp.float32)
         args_fwd = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, cp.int32(ldp)] + 
-                    [s_d, cp.int32(lds)][:2*(mode!='orth')] + [u_in_d, u_out_d, cp.int32(ldu)] + 
-                    [cp.bool(False)][:mode=='sym'])
+                    [s_d, cp.int32(lds)] + [u_in_d, u_out_d, cp.int32(ldu)] + 
+                    [cp.int32(0)])
         # Fwd-propagate, get gradient, then back-propagate.
         fwd((Nblk,), (32, Nwarp), tuple(args_fwd))
         dJdu_out_d = 2*(u_out_d - u0_d)
         args_rev = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, dp_d, cp.int32(ldp)] + 
-                    [s_d, cp.int32(lds)][:2*(mode!='orth')] + [u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, cp.int32(ldu)] + 
-                    [cp.bool(False)][:mode=='sym'])
+                    [s_d, cp.int32(lds)] + [u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, cp.int32(ldu)] + 
+                    [cp.int32(0)])
         rev((Nblk,), (32, Nwarp), tuple(args_rev))
         (u_out, dJdu_out, u_in2, dJdu_in2, dp) = map(cp.asnumpy, (u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, dp_d))
 
@@ -177,8 +176,8 @@ def test_fwd_speed(diff, mode='mzi'):
         ldp = (32*K)*n_p; lds = (32*K)*n_s; ldu = 2*(32*K)
         (N_d, L_d, B_d, ldp_d, lds_d, ldu_d) = map(cp.int32, (N, L, B, ldp, lds, ldu))
         t = 0; ct = 1
-        args = ([N_d, L_d, B_d, lens_d, shifts_d, p_d] + [dp_d][:diff] + [ldp_d] + [s_d, lds_d][:2*(mode!='orth')] + 
-                ([in_d, din_d, out_d, dout_d, ldu_d] if diff else [in_d, out_d, ldu_d]) + [cp.bool(False)][:mode=='sym'])
+        args = ([N_d, L_d, B_d, lens_d, shifts_d, p_d] + [dp_d][:diff] + [ldp_d] + [s_d, lds_d] + 
+                ([in_d, din_d, out_d, dout_d, ldu_d] if diff else [in_d, out_d, ldu_d]) + [cp.int32(0)])
         while (t < 1e-2):
             cp.cuda.runtime.deviceSynchronize(); t = time()
             for i in range(ct):
@@ -264,8 +263,8 @@ def test_rev_speed(mode):
         ldp = (32*K)*n_p; lds = (32*K)*n_s; ldu = 2*(32*K)
         t = 0; ct = 1
         args = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, dp_d, cp.int32(ldp)] +
-                [s_d, cp.int32(lds)][:2*(mode!='orth')] + [u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu)] + 
-                [cp.bool(False)][:mode=='sym'])
+                [s_d, cp.int32(lds)] + [u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu)] + 
+                [cp.int32(0)])
         while (t < 1e-2):
             cp.cuda.runtime.deviceSynchronize(); t = time()
             for i in range(ct):

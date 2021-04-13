@@ -80,9 +80,9 @@ __device__ void Tij_mzi(const float *p, const float *dp, const float *s, complex
 //
 // T = [[exp(+i*φ) (sin(θ/2) + i cos(θ/2)sin(2α)),  i cos(θ/2)cos(2α)                       ],
 //      [i cos(θ/2)cos(2α),                         exp(-i*φ) (sin(θ/2) - i cos(θ/2)sin(2α))]]
-__device__ void Tij_mzi_sym(const float *p, const float *dp, const float *s, float *T, float *dT, bool cartesian, bool init_dT)
+__device__ void Tij_mzi_sym(const float *p, const float *dp, const float *s, float *T, float *dT, int cartesian, bool init_dT)
 {
-    if (cartesian == false)
+    if (cartesian == 0)
     {
         // cos(θ/2), sin(θ/2), cos(φ), sin(φ)
         float C_th, S_th, C_ph, S_ph;

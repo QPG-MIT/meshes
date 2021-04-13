@@ -22,7 +22,7 @@ __global__ void fname(int N, int L, int B,
                       float *p, int ldp, 
                       float *s, int lds, 
                       complex64 *u_in,
-                      complex64 *u_out, int ldu)
+                      complex64 *u_out, int ldu, int mode)
 {
     const int pack_T = 1; // Packing factor 4 / (# T params) (default: 1, symmetric Tij: 2)
     const int stride_T = 4 / pack_T;
@@ -37,14 +37,14 @@ __global__ void fname(int N, int L, int B,
     
 	// Transfer matrices.
 	// The b^th matrix of column c goes in T[c][4(b%K):4(b%K)+4][b/K].
-	__shared__ complex64 T[L0][4*K][32];
+    __shared__ complex64 T[L0][4*K][32];
     __shared__ int shifts_cache[nL*L0];
     __shared__ int lens_cache[nL*L0];
     
-	// State.  The i^th waveguide is u[i%K] of thread i/K.
-	complex64 u[2*K];
+    // State.  The i^th waveguide is u[i%K] of thread i/K.
+    complex64 u[2*K];
 	
-	// Load u coalesced, gmem -> smem.  Macro defined in meshprop.cu.
+    // Load u coalesced, gmem -> smem.  Macro defined in meshprop.cu.
     load_u(u, u_in);
 
 	for (int x = 0; x < L; x += L_ker)
@@ -97,7 +97,7 @@ __global__ void fname(int N, int L, int B,
 
 #if CROSSING_TYPE == SYM
 __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, int ldp, float *s, int lds, 
-                      complex64 *u_in, complex64 *u_out, int ldu, bool cartesian)
+                      complex64 *u_in, complex64 *u_out, int ldu, int mode)
 {
     const int pack_T = 1, stride_T = 3;
 
@@ -146,12 +146,8 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, int
 
 
 #if CROSSING_TYPE == ORTH
-
-#define s 0
-#define lds 0
-
-__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, int ldp,
-                      float *u_in, float *u_out, int ldu)
+__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, int ldp, float *s, int lds, 
+                      float *u_in, float *u_out, int ldu, int mode)
 {
     const int pack_T = 1, stride_T = 2;
 
@@ -189,10 +185,6 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, int
     }
     save_u_orth(u, u_out);                                  // Save output state.
 }
-
-#undef s
-#undef lds
-
 #endif
 
 #undef L_ker

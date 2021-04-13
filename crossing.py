@@ -12,6 +12,7 @@
 #   12/20/20: Added MZICrossingSym (symmetric +theta / -theta pairing).
 #   03/29/21: Added CartesianCrossing (non-singular parameterization) and crossing conversion utility.
 #   04/07/21: Slight speedup using numpy.einsum for dot(), rdot(), grad().
+#   04/13/21: Replaced 2*theta -> theta in phase shifters for consistency in notation.
 
 import numpy as np
 from typing import Any, Tuple
@@ -204,25 +205,25 @@ class MZICrossing(Crossing):
     def __init__(self):
         r"""
         Class implementing the conventional MZI crossing:
-        -->--[phi]--| (pi/4    |--[2*theta]--| (pi/4   |-->--
-        -->---------|  +beta') |-------------|  +beta) |-->--
+        -->--[phi]--| (pi/4    |--[theta]--| (pi/4   |-->--
+        -->---------|  +beta') |-----------|  +beta) |-->--
         Here p_phase = (theta, phi) and p_splitter = (beta, beta').
         """
         pass
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
-        (theta, phi) = np.array(p_phase).T; beta = np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2
-        (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1], theta]]
-        return np.exp(1j*theta) * np.array([[np.exp(1j*phi) * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
-                                            [np.exp(1j*phi) * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
+        (theta, phi) = np.array(p_phase).T; (a, b) = (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2)
+        (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [a+b, a-b, theta/2]]
+        return np.exp(1j*theta/2) * np.array([[np.exp(1j*phi) * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
+                                              [np.exp(1j*phi) * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
 
     def dT(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
-        (theta, phi) = np.array(p_phase).T; beta = np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2
-        (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1], theta]]
-        return (np.exp(1j*np.array([[[phi+theta, theta]]])) *
-                np.array([[[1j*(1j*S*Cm-C*Sp)+( 1j*C*Cm+S*Sp),   1j*( 1j*C*Cp-S*Sm)+(-1j*S*Cp-C*Sm)],
-                           [1j*(1j*C*Cp+S*Sm)+(-1j*S*Cp+C*Sm),   1j*(-1j*S*Cm-C*Sp)+(-1j*C*Cm+S*Sp)]],
-                          [[1j*(1j*S*Cm-C*Sp),                   0*S                               ],
-                           [1j*(1j*C*Cp+S*Sm),                   0*S                               ]]]))
+        (theta, phi) = np.array(p_phase).T; (a, b) = (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2)
+        (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [a+b, a-b, theta/2]]
+        return (np.exp(1j*np.array([[[phi+theta/2, theta/2]]])) *
+                np.array([[[0.5j*(1j*S*Cm-C*Sp)+0.5*( 1j*C*Cm+S*Sp),   0.5j*( 1j*C*Cp-S*Sm)+0.5*(-1j*S*Cp-C*Sm)],
+                           [0.5j*(1j*C*Cp+S*Sm)+0.5*(-1j*S*Cp+C*Sm),   0.5j*(-1j*S*Cm-C*Sp)+0.5*(-1j*C*Cm+S*Sp)]],
+                          [[  1j*(1j*S*Cm-C*Sp),                   0*S                                 ],
+                           [  1j*(1j*C*Cp+S*Sm),                   0*S                                 ]]]))
 
     def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
         beta = p_splitter if np.iterable(p_splitter) else (p_splitter, p_splitter)
@@ -230,28 +231,28 @@ class MZICrossing(Crossing):
         if (ind in [0, (0, 0), 'T11']):
             # Input target T = T[0, 0]
             S2 = (np.abs(T)**2 - Sp**2) / (Cm**2 - Sp**2)
-            err = 1*((S2 < 0) | (S2 > 1)); theta = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
-            phi = np.angle(T) - np.angle(1j*Cm*np.sin(theta) - np.cos(theta)*Sp) - theta
+            err = 1*((S2 < 0) | (S2 > 1)); theta2 = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
+            phi = np.angle(T) - np.angle(1j*Cm*np.sin(theta2) - np.cos(theta2)*Sp) - theta2
         elif (ind in [1, (1, 0), 'T21']):
             # Input target T = T[1, 0]
             S2 = (Cp**2 - np.abs(T)**2) / (Cp**2 - Sm**2)
-            err = 1*((S2 < 0) | (S2 > 1)); theta = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
-            phi = np.angle(T) - np.angle(1j*Cp*np.cos(theta) + np.sin(theta)*Sm) - theta
+            err = 1*((S2 < 0) | (S2 > 1)); theta2 = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
+            phi = np.angle(T) - np.angle(1j*Cp*np.cos(theta2) + np.sin(theta2)*Sm) - theta2
         elif (ind == 'T1:'):
             # Input target T[1, :] = (T11, T12) and try to match the ratio T12/T11.
             R2 = np.abs(T[1])**2/(np.abs(T[0])**2 + 1e-30); S2 = (Cp**2 - R2*Sp**2)/((Cp**2-Sm**2) + R2*(Cm**2-Sp**2))
-            err = 1*((S2 < 0) | (S2 > 1)); theta = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
-            (C, S) = (np.cos(theta), np.sin(theta))
+            err = 1*((S2 < 0) | (S2 > 1)); theta2 = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
+            (C, S) = (np.cos(theta2), np.sin(theta2))
             phi = np.angle(1j*C*Cp - S*Sm) - np.angle(1j*Cm*S - C*Sp) + np.angle(T[0]) - np.angle(T[1])
         elif (ind == 'T2:'):
             # Input target T[2, :] = (T21, T22) and try to match the ratio T22/T21.
             R2 = np.abs(T[1])**2/(np.abs(T[0])**2 + 1e-30); S2 = (-Sp**2 + R2*Cp**2)/((Cm**2-Sp**2) + R2*(Cp**2-Sm**2))
-            err = 1*((S2 < 0) | (S2 > 1)); theta = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
-            (C, S) = (np.cos(theta), np.sin(theta))
+            err = 1*((S2 < 0) | (S2 > 1)); theta2 = np.nan_to_num(np.arcsin(np.sqrt(np.clip(S2, 0, 1))), 0, 0, 0)
+            (C, S) = (np.cos(theta2), np.sin(theta2))
             phi = np.angle(-1j*Cm*S - Sp*C) - np.angle(1j*Cp*C + Sm*S) + np.angle(T[0]) - np.angle(T[1])
         else:
             raise NotImplementedError(ind)
-        return ((theta, phi), err)
+        return ((theta2*2, phi), err)
 
     def clemshift(self, psi, p_phase, p_splitter: Any=0) -> Tuple[Tuple, Tuple]:
         # Transformation: T(p)* D(psi) -> D(psi') T(p').
@@ -289,15 +290,15 @@ class MZICrossingSym(MZICrossing):
     def __init__(self):
         r"""
         Class implementing the symmetric MZI crossing:
-        -->--[phi]--| (pi/4    |--[+theta]--| (pi/4   |-->--
-        -->---------|  +beta') |--[-theta]--|  +beta) |-->--
+        -->--[phi]--| (pi/4    |--[+theta/2]--| (pi/4   |-->--
+        -->---------|  +beta') |--[-theta/2]--|  +beta) |-->--
         Here p_phase = (theta, phi) and p_splitter = (beta, beta').
         """
         pass
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         (theta, phi) = np.array(p_phase).T; theta = np.asarray(theta)
         out = super(MZICrossingSym, self).T(p_phase, p_splitter)
-        out *= np.exp(-1j*theta).reshape((1, 1) + theta.shape)
+        out *= np.exp(-1j*theta/2).reshape((1, 1) + theta.shape)
         return out
     @property
     def tunable_indices(self) -> Tuple:
@@ -317,8 +318,8 @@ class MZICrossingOutPhase(MZICrossing):
     def __init__(self):
         r"""
         Class implementing the MZI crossing with phase shifter on the output:
-        -->--| (pi/4    |--[2*theta]--| (pi/4   |--------->--
-        -->--|  +beta') |-------------|  +beta) |--[phi]-->--
+        -->--| (pi/4    |--[theta]--| (pi/4   |--------->--
+        -->--|  +beta') |-----------|  +beta) |--[phi]-->--
         Here p_phase = (theta, phi) and p_splitter = (beta, beta').
         """
         pass

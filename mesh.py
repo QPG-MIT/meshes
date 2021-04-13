@@ -12,6 +12,7 @@
 #   12/15/20: Added Ratio Method tuning triangular meshes.
 #   12/19/20: Added Direct Method for tuning triangular meshes.
 #   03/29/21: Added utility to convert between crossing types.  Tweaks to gradient function.  Hessian support.
+#   04/12/21: Forward differentiation support.
 
 
 import numpy as np

@@ -21,7 +21,7 @@ __global__ void fname(int N, int L, int B,
                       float *p, float *dp, int ldp, 
                       float *s, int lds, 
                       complex64 *u_in,  complex64 *du_in,
-                      complex64 *u_out, complex64 *du_out, int ldu)
+                      complex64 *u_out, complex64 *du_out, int ldu, int mode)
 {
     const int pack_T = 1; // Packing factor 4 / (# T params) (default: 1, symmetric Tij: 2)
     const int stride_T = 4 / pack_T;
@@ -108,7 +108,7 @@ __global__ void fname(int N, int L, int B,
 
 #if CROSSING_TYPE == SYM
 __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, float *s, int lds, 
-                      complex64 *u_in, complex64 *du_in, complex64 *u_out, complex64 *du_out, int ldu, bool cartesian)
+                      complex64 *u_in, complex64 *du_in, complex64 *u_out, complex64 *du_out, int ldu, int mode)
 {
     const int pack_T = 1, stride_T = 3;
 	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
@@ -169,12 +169,8 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, flo
 
 
 #if CROSSING_TYPE == ORTH
-
-#define s 0
-#define lds 0
-
-__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, 
-                      float *u_in, float *du_in, float *u_out, float *du_out, int ldu)
+__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, float *s, int lds, 
+                      float *u_in, float *du_in, float *u_out, float *du_out, int ldu, int mode)
 {
     const int pack_T = 1, stride_T = 2, stride_dth = 1;
 
@@ -217,10 +213,6 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, flo
     }
     save_u_du_orth(u, du, u_out, du_out);                       // Save output.
 }
-
-#undef s
-#undef lds
-
 #endif
 
 
