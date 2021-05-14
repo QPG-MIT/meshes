@@ -380,6 +380,45 @@ class SymCrossing(Crossing):
         return np.array([[np.exp(1j*phi)*(S + 1j*C*S_2a),  1j*C*C_2a],
                          [1j*C*C_2a, np.exp(-1j*phi)*(S - 1j*C*S_2a)]])
     
+class MZICrossing3(Crossing):
+    _X: Crossing
+    @property
+    def n_phase(self) -> int:
+        return 2
+    @property
+    def n_splitter(self) -> int:
+        return 3
+    @property
+    def tunable_indices(self) -> Tuple:
+        return ('T1:',)
+
+    def __init__(self):
+        r"""
+        Class implementing a 3-MZI crossing, p_phase=(theta, phi), p_splitter=(alpha, beta, gamma).
+        """
+        self._X = MZICrossing()
+
+    def _get_beta(self, p_splitter):
+        return (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*3)
+
+    def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        sp = self._get_beta(p_splitter)
+        ((T11, T12), (T21, T22)) = self._X.T(p_phase, sp[:2].T); eta = sp[2]
+        s11 = s22 = np.cos(eta); s12 = s21 = 1j*np.sin(eta)
+        return np.array([[T11*s11 + T12*s21,  T11*s12 + T12*s22],
+                         [T21*s11 + T22*s21,  T21*s12 + T22*s22]])
+
+    def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
+        sp = self._get_beta(p_splitter).T; eta = sp[2]
+        if (ind == 'T1:'):
+            (T11, T12) = (T[0], T[1]); s = T11/T12
+            s = (s - 1j*np.tan(eta)) / (1 - 1j*np.tan(eta)*s)
+            return self._X.Tsolve((s, s*0 + 1), ind, sp[:2])
+
+
+
+
+
 class CartesianCrossing(Crossing):
     @property
     def n_phase(self) -> int:

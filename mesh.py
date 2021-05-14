@@ -455,7 +455,7 @@ class StructuredMeshNetwork(MeshNetwork):
         phi_out = np.zeros([self.N])
         s_in = self.p_splitter + np.zeros([self.n_cr, self.X.n_splitter])
         p_in = self.p_crossing
-        s_out = p_splitter * np.zeros([self.n_cr, X.n_splitter])
+        s_out = p_splitter + np.zeros([self.n_cr, X.n_splitter])
         p_out = np.zeros([self.n_cr, X.n_phase])
 
         # Convert each layer and propagate the phases to the right [left].  Merge with output [input] phase screen.
