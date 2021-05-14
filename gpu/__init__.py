@@ -15,16 +15,19 @@
 import numpy as np
 import cupy as cp
 from .mesh import MeshNetworkGPU
+from .opt import MeshOptimizer
 
 # Load the CUDA module.
 mod = cp.RawModule(path=__path__[0]+"/meshprop.cubin")
 
 # Load the optimal number of warps.
+nwarps_nlist = []
 nwarps_opt = dict()
 for fname in ['fwdprop', 'fwddiff', 'backdiff']:
     for mode in ['mzi', 'sym', 'orth']:
         data = np.loadtxt(f"{__path__[0]}/benchmarks/{fname}_{mode}.txt", skiprows=1)
         data = data.reshape([2, data.shape[0]//2, data.shape[1]])
         for (data_i, shape) in zip(data, ['sq', 'fat']):
+            nwarps_nlist = np.array(data_i[:, 0]).astype(int)
             for (N, warps) in data_i[:, [0, 3]]:
                 nwarps_opt[(fname, mode, shape, int(N))] = int(warps)

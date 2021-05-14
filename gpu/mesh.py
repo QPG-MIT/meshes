@@ -11,9 +11,9 @@ import cupy as cp
 from typing import List, Tuple, Callable
 from ..mesh import MeshNetwork
 
-def _mat(val, shape, check_order=None, **args):
+def _mat(val, shape, check_order=None, zero=False, **args):
     if val is None:
-        return cp.empty(shape, **args)
+        return cp.zeros(shape, **args) if zero else cp.empty(shape, **args)
     else:
         if check_order: assert (cp.isfortran(val) == (check_order=='F'))
         return cp.asarray(val, **args)
@@ -60,7 +60,7 @@ class MeshNetworkGPU(MeshNetwork):
         :param phi_pos: Position of external phase screen.
         :param is_phase: Whether to include the phase screen.  If not, mesh will not be universal.
         """
-        from . import mod, nwarps_opt
+        from . import mod, nwarps_opt, nwarps_nlist
         
         assert not is_phase     # TODO -- generalize.
         assert X in ['mzi', 'sym', 'orth']
@@ -81,8 +81,7 @@ class MeshNetworkGPU(MeshNetwork):
                            if p_splitter.size else cp.empty((L, N//2, 0), dtype=cp.float32, order="C"))
         
         assert (N <= 640)    # Can't make larger meshes than this right now.
-        N0 = (N-1)//64 + 64
-        print (f"fwdprop_N{N0}_{X}")
+        N0 = next(n for n in nwarps_nlist if n >= N)
         self._fwdprop  = mod.get_function(f"fwdprop_N{N0}_{X}")
         self._fwddiff  = mod.get_function(f"fwddiff_N{N0}_{X}")
         self._backdiff = mod.get_function(f"backdiff_N{N0}_{X}")
@@ -138,9 +137,9 @@ class MeshNetworkGPU(MeshNetwork):
         self.phi_out[:] = p
         
     def _defaults(self, p_phase, p_splitter):
-        (p, s) = (self.p_phase if (p_phase==None) else cp.asarray(p_phase, dtype=cp.float32, order="C"),
-                  self.p_splitter if (p_splitter==None) else cp.asarray(p_splitter, dtype=cp.float32, order="C"))
-        assert (p.size == self.n_phase) and (s.size == self.n_splitter); return (p, s)
+        (p, s) = (self.p_phase if (p_phase is None) else cp.asarray(p_phase, dtype=cp.float32, order="C"),
+                  self.p_splitter if (p_splitter is None) else cp.asarray(p_splitter, dtype=cp.float32, order="C"))
+        assert (p.size == self.n_phase) and (s.size in [self.n_splitter, 0]); return (p, s)
 
     def matrix(self, p_phase=None, p_splitter=None) -> np.ndarray:
         return self.dot(cp.eye(self.N, dtype=self.dtype), p_phase, p_splitter)
@@ -177,7 +176,7 @@ class MeshNetworkGPU(MeshNetwork):
     def _L2norm_fn(self, J):
         def f(U):
             V = U - cp.eye(self.N, dtype=self.dtype)
-            if not self.is_phase: V.reshape([N*N])[::N+1] = 0
+            if not self.is_phase: V.reshape([self.N*self.N])[::self.N+1] = 0
             J[0] = cp.linalg.norm(V)**2; return 2*V
         return f
 
@@ -212,13 +211,13 @@ class MeshNetworkGPU(MeshNetwork):
         (argsf, argsf_f32, argsc, argsc_f32) = [dict(dtype=t, order=o) for o in "FC" for t in [self.dtype, cp.float32]]
         (p, s) = self._defaults(p_phase, p_splitter);
         v = _mat(v, v.shape, **argsf); 
-        out_dJdv = _mat(out_dJdv, v.shape, 'F', **argsf); out_dp = _mat(out_dp, p.shape, 'C', **argsc_f32)
+        out_dJdv = _mat(out_dJdv, v.shape, 'F', **argsf); out_dp = _mat(out_dp, p.shape, 'C', True, **argsc_f32)
         (N, L, B, ldp, lds, ldu) = map(cp.int32, [self.N, self.L, v.shape[1], 
                                                   self.N//2*self.X_np, self.N//2*self.X_ns, self.N])
 
         # Forward propagate, if needed.
         if (vpos == 'in'):
-            self.dot(v, p_phase, p_splitter, out=v)
+            v = self.dot(v, p_phase, p_splitter)
 
         # Get gradient.
         if callable(dJdv):

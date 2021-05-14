@@ -41,7 +41,7 @@ __global__ void fname(int N, int L, int B,
     // flip the signs of (lds, ldp).
     p      += ldp * (L-1);
     dp     += ldp * (L-1);
-    s      += lds * (L-1);
+    if (s) {s += lds * (L-1);}
     lens   += (L-1);
     shifts += (L-1);
     ldp    *= -1;
@@ -111,7 +111,7 @@ __global__ void fname(int N, int L, int B,
         
         p  += L_ker * ldp;
         dp += L_ker * ldp;
-        s  += L_ker * lds;
+        if (s) {s += L_ker * lds;}
         
         __syncthreads();  // TODO -- is this necessary?
     }
@@ -133,7 +133,8 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, flo
     dJdu_out  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
     if (dJdu_in) {dJdu_in += ldu  * (blockDim.y*blockIdx.x + threadIdx.y);}
     int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);     // # active warps
-    p += ldp * (L-1); dp += ldp * (L-1); s += lds * (L-1); lens += (L-1); shifts += (L-1); ldp *= -1; lds *= -1;
+    p += ldp * (L-1); dp += ldp * (L-1); if (s) {s += lds * (L-1);} 
+	lens += (L-1); shifts += (L-1); ldp *= -1; lds *= -1;
 
     __shared__ float T[L0][3*K][32], dT[L0][3*K][32];               // Transfer matrices
     __shared__ int shifts_cache[L_preload], lens_cache[L_preload];  // Index cache

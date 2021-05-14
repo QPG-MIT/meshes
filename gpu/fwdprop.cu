@@ -83,7 +83,7 @@ __global__ void fname(int N, int L, int B,
         }
         
         p += L_ker * ldp;
-        s += L_ker * lds;
+        if (s) {s += L_ker * lds;}
         
         __syncthreads();  // TODO -- is this necessary?
     }

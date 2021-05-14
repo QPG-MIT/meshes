@@ -24,7 +24,7 @@
 #   04/10/21: Added symmetric and real orthogonal crossings to the CUDA code.
 #   04/13/21: Python interface to the CUDA code via MeshNetworkGPU class.
 
-from .crossing import Crossing, MZICrossing, CartesianCrossing
+from .crossing import Crossing, MZICrossing, SymCrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
 from .reck import ReckNetwork
 from .clements import ClementsNetwork, SymClementsNetwork

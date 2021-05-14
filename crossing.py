@@ -9,7 +9,7 @@
 #   07/09/20: Created this file.  Defined classes Crossing, MZICrossing.
 #   07/10/20: Added clemshift() functionality (convert T(p)* psi -> psi' T(p') for Clements decomposition).
 #   12/10/20: Added MZICrossingOutPhase with phase shifter on the lower output.
-#   12/20/20: Added MZICrossingSym (symmetric +theta / -theta pairing).
+#   12/20/20: Added MZICrossingBalanced (symmetric +theta / -theta pairing).
 #   03/29/21: Added CartesianCrossing (non-singular parameterization) and crossing conversion utility.
 #   04/07/21: Slight speedup using numpy.einsum for dot(), rdot(), grad().
 #   04/13/21: Replaced 2*theta -> theta in phase shifters for consistency in notation.
@@ -283,10 +283,9 @@ class MZICrossing(Crossing):
     def tunable_indices(self) -> Tuple:
         return ('T11', 'T21', 'T1:', 'T2:')
 
+    
 
-
-
-class MZICrossingSym(MZICrossing):
+class MZICrossingBalanced(MZICrossing):
     def __init__(self):
         r"""
         Class implementing the symmetric MZI crossing:
@@ -297,7 +296,7 @@ class MZICrossingSym(MZICrossing):
         pass
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         (theta, phi) = np.array(p_phase).T; theta = np.asarray(theta)
-        out = super(MZICrossingSym, self).T(p_phase, p_splitter)
+        out = super(MZICrossingBalanced, self).T(p_phase, p_splitter)
         out *= np.exp(-1j*theta/2).reshape((1, 1) + theta.shape)
         return out
     @property
@@ -305,7 +304,7 @@ class MZICrossingSym(MZICrossing):
         return ('T1:', 'T2:')   # TODO -- also handle T11 and T21
     def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
         assert (ind in ['T1:', 'T2:'])    # TODO -- also handle T11 and T21
-        return super(MZICrossingSym, self).Tsolve(T, ind, p_splitter)
+        return super(MZICrossingBalanced, self).Tsolve(T, ind, p_splitter)
     def dT(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         raise NotImplementedError()
     def flip(self) -> Crossing:
@@ -356,8 +355,31 @@ class MZICrossingOutPhase(MZICrossing):
         return ('T22', 'T21', 'T:1', 'T:2')
 
 
+    
 
+class SymCrossing(Crossing):
+    @property
+    def n_phase(self) -> int:
+        return 2
+    @property
+    def n_splitter(self) -> int:
+        return 1
 
+    def __init__(self):
+        r"""
+        Class implementing the symmetric crossing.
+        [[s,                   i sqrt(1 - |s|^2)],
+         [i sqrt(1 - |s|^2),   s                ]]
+        where s = exp(i*phi) (sin(theta/2) + i cos(theta/2) sin(2*alpha))
+        Here p_phase = [theta, phi], p_splitter = [alpha]
+        """
+        pass
+    def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        (theta, phi) = p_phase.T; (beta,) = p_splitter.T
+        (C, C_2a, S, S_2a) = [fn(x) for fn in [np.cos, np.sin] for x in [theta/2, 2*beta]]
+        return np.array([[np.exp(1j*phi)*(S + 1j*C*S_2a),  1j*C*C_2a],
+                         [1j*C*C_2a, np.exp(-1j*phi)*(S - 1j*C*S_2a)]])
+    
 class CartesianCrossing(Crossing):
     @property
     def n_phase(self) -> int:

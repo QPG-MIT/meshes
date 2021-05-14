@@ -17,7 +17,7 @@ import warnings
 from numba import njit
 from typing import Any, Tuple
 from .mesh import MeshNetwork, StructuredMeshNetwork, calibrateTriangle
-from .crossing import Crossing, MZICrossing
+from .crossing import Crossing, MZICrossing, SymCrossing
 from .configure import diag
 
 class ClementsNetwork(StructuredMeshNetwork):
@@ -29,7 +29,8 @@ class ClementsNetwork(StructuredMeshNetwork):
                  M: np.ndarray=None,
                  N: int=None,
                  warn=True,
-                 phi_pos='out'):
+                 phi_pos='out',
+                 is_phase=True):
         r"""
         Mesh network based on the Reck (triangular) decomposition.
         :param N: Number of inputs / outputs.
@@ -37,7 +38,17 @@ class ClementsNetwork(StructuredMeshNetwork):
         :param p_splitter: Beamsplitter imperfection parameters.  Scalar or size (N(N-1)/2, X.n_splitter).
         :param M: A unitary matrix.  If specified, runs clemdec() to find the mesh realizing this unitary.
         """
-        if (M is not None): N = len(M)  # Start by getting N, shifts, lens, p_splitter
+        if (M == 'haar'):
+            assert not np.any(list(map(np.iterable, [p_crossing, phi_out, p_splitter])))
+            assert type(X) in [MZICrossing, SymCrossing]
+            x = (np.outer(1, np.array([0]*(N//2) + [1]*(N//2-1))) + np.outer(np.arange(0, N, 2), 1)).flatten()
+            y = np.outer([1]*(N//2), np.concatenate([np.arange(0, N, 2), np.arange(1, N-1, 2)])).flatten()
+            k = (np.minimum(2*np.minimum(x, N-1-x)+1, 2*np.minimum(y, N-2-y)+2))
+            theta = 2*np.arccos(np.random.uniform(0, np.ones(len(k)))**(1/(2*k)))*(np.random.randint([2]*len(k))*2-1)
+            phi = 2*np.pi*np.random.uniform(0, np.ones(len(k)))
+            p_crossing = np.array([theta, phi]).T
+            phi_out = 2*np.pi*np.random.uniform(0, np.ones(N))[:N*is_phase]
+        elif (M is not None): N = len(M)  # Start by getting N, shifts, lens, p_splitter
         elif (np.iterable(phi_out)): N = len(phi_out)
         else: assert N != None
         lens = list((N - np.arange(N) % 2)//2)
@@ -46,14 +57,16 @@ class ClementsNetwork(StructuredMeshNetwork):
         if (M is None):
             # Initialize from parameters.  Check parameters first.
             p_crossing = p_crossing * np.ones([N*(N-1)//2, X.n_phase]); phi_out = phi_out * np.ones(N)
-        else:
+        elif (type(M) != str):
             # Initialize from a matrix.  Calls clemdec() after correctly ordering the crossings.
             assert phi_pos == 'out'
             (pars_S, ch_S, pars_Smat, phi_out) = clemdec(M, p_splitter, X, warn)  # <-- The hard work is done here.
             p_crossing = (pars_Smat if N%2 else
                           pars_Smat.reshape([N//2, N, X.n_phase])[:, :-1, :]).reshape(N*(N-1)//2, X.n_phase)
+        if (type(M) != str) and (not is_phase) and (np.iterable(phi_out)):
+            warnings.warn("Cannot realize mesh exactly due to lack of external phase shifters: is_phase=False")
         super(ClementsNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
-                                              p_crossing=p_crossing, phi_out=phi_out, X=X, phi_pos=phi_pos)
+                                              p_crossing=p_crossing, phi_out=phi_out, X=X, phi_pos=phi_pos, is_phase=is_phase)
 
     def split(self) -> Tuple[StructuredMeshNetwork, StructuredMeshNetwork]:
         r"""

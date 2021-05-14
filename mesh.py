@@ -18,7 +18,7 @@
 import numpy as np
 import warnings
 from typing import List, Any, Tuple, Callable
-from .crossing import Crossing, MZICrossing, MZICrossingOutPhase
+from .crossing import Crossing, MZICrossing, MZICrossingOutPhase, SymCrossing
 
 
 # The base class MeshNetwork.
@@ -434,10 +434,13 @@ class StructuredMeshNetwork(MeshNetwork):
         Arranges the data of self.p_splitter onto a 2D array.
         :return:
         """
-        out = np.zeros([self.L, (self.N+1)//2, self.X.n_splitter]) * np.nan
-        for (i, j0, nj, ind) in zip(range(self.L), self.shifts, self.lens, self.inds):
-            out[i, j0//2:j0//2+nj, :] = self.p_splitter[ind:ind+nj, :]
-        return out
+        if np.iterable(self.p_splitter):
+            out = np.zeros([self.L, (self.N+1)//2, self.X.n_splitter]) * np.nan
+            for (i, j0, nj, ind) in zip(range(self.L), self.shifts, self.lens, self.inds):
+                out[i, j0//2:j0//2+nj, :] = self.p_splitter[ind:ind+nj, :]
+            return out
+        else:
+            return np.zeros([self.L, 0])
 
     def convert(self,
                 X: Crossing,
@@ -466,8 +469,19 @@ class StructuredMeshNetwork(MeshNetwork):
 
         return StructuredMeshNetwork(N=self.N, lens=self.lens, shifts=self.shifts, p_splitter=s_out, p_crossing=p_out,
             phi_out=phi_out if self.is_phase else None, perm=self.perm, X=X, phi_pos=self.phi_pos, is_phase=self.is_phase)
-
-
+    
+    def gpu(self):
+        r"""
+        Converts this network to a MeshNetworkGPU instance.
+        """
+        from .gpu import MeshNetworkGPU
+        assert np.all([x == None for x in self.perm])
+        
+        p = np.nan_to_num(self.grid_phase.astype(np.float32))
+        s = np.nan_to_num(self.grid_splitter.astype(np.float32))
+        X = {MZICrossing: 'mzi', SymCrossing: 'sym'}[type(self.X)]
+        return MeshNetworkGPU(self.N, self.L, np.array(self.lens), np.array(self.shifts),
+                              p, s, X, phi_pos='out', is_phase=self.is_phase)
 
 def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
     r"""

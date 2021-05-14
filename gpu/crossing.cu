@@ -42,8 +42,15 @@ __device__ void Tij_mzi(const float *p, const float *dp, const float *s, complex
 
 	// cos(α ± β), sin(α ± β)
 	float Cp, Sp, Cm, Sm;
-	__sincosf(s[0]+s[1],   &Sp, &Cp);
-	__sincosf(s[0]-s[1],   &Sm, &Cm);
+    if (s != 0)
+    {
+        __sincosf(s[0]+s[1],   &Sp, &Cp);
+        __sincosf(s[0]-s[1],   &Sm, &Cm);
+    }
+    else
+    {
+        Sp = 0; Cp = 1; Sm = 0; Cm = 1;
+    }
 
 	// Equivalent Python code:
     // (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [beta[0]+beta[1], beta[0]-beta[1], theta/2]]
@@ -151,8 +158,15 @@ __device__ void dp_mzi(const float *p, const float *s, const complex64 *dT, floa
 
 	// cos(α ± β), sin(α ± β)
 	float Cp, Sp, Cm, Sm;
-	__sincosf(s[0]+s[1],   &Sp, &Cp);
-	__sincosf(s[0]-s[1],   &Sm, &Cm);
+    if (s != 0)
+    {
+        __sincosf(s[0]+s[1],   &Sp, &Cp);
+        __sincosf(s[0]-s[1],   &Sm, &Cm);
+    }
+    else
+    {
+        Sp = 0; Cp = 1; Sm = 0; Cm = 1;
+    }
 
     // TODO -- simplify this once I'm sure that it works.
     float dp0, dp1;
