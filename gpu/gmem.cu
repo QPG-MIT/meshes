@@ -186,6 +186,31 @@ for (L0, nL, bd_y) in zip([36,20,14,11,7,5,4,2], [8,8,16,16,32,32,32,32], [8,10,
 #define load_pos_cache_fwd load_pos_cache(+1)
 #define load_pos_cache_rev load_pos_cache(-1)
 
+#define load_cache(code) \
+    if (x % L_preload == 0) \
+    { \
+        for (int i = 0; i < L_preload; i += 32*blockDim.y) \
+        { \
+            int id = i + 32*threadIdx.y + threadIdx.x; \
+            if (id < L_preload && x + id < L) {code;} \
+        } \
+        __syncthreads(); \
+    }
+/*  TODO -- check this code.  Replacement for old load_pos_cache, above.
+#define load_pos_cache(sign) \
+    load_cache(lens_cache[id]   = lens[sign*(x + id)]; \
+               shifts_cache[id] = shifts[sign*(x + id)])
+#define load_pos_cache_fwd load_pos_cache(+1)
+#define load_pos_cache_rev load_pos_cache(-1)
+//*/
+#define load_strides_cache(sign) \
+    load_cache(strides_cache[id] = strides[sign*(x + id)])
+#define load_strides_cache_fwd load_strides_cache(+1)
+#define load_strides_cache_rev load_strides_cache(-1)
+
+
+
+
 // Load T (coalesced in gmem, strided in smem).
 // Python code that checks this (for debugging):
 /*
@@ -223,7 +248,13 @@ for i in range(0, K*L, B):
 #define IDX_PS(stride_p, stride_s)   int idx_p = ldp*l + stride_p*dm, idx_s = s ? (lds*l + stride_s*dm) : 0
 #define IDX_P(stride_p)              int idx_p = ldp*l + stride_p*dm
 
-#define matrix_io(indexing, code_in, code_out) { \
+#define cond_gen \
+    dm >= shifts_cache[(x+l) % L_preload]/2 && \
+    dm <  shifts_cache[(x+l) % L_preload]/2 + lens_cache[(x+l) % L_preload]
+#define cond_fft \
+    true
+
+#define matrix_io(indexing, cond, code_in, code_out) { \
 for (int i = 0; i < K*L_ker; i += blockDim.y) \
 { \
     int l = (i + threadIdx.y)/K, m = (i + threadIdx.y)%K; \
@@ -231,8 +262,7 @@ for (int i = 0; i < K*L_ker; i += blockDim.y) \
     { \
         int dm = (m*32 + threadIdx.x); \
         indexing; \
-        if (dm >= shifts_cache[(x+l) % L_preload]/2 && \
-            dm <  shifts_cache[(x+l) % L_preload]/2 + lens_cache[(x+l) % L_preload]) \
+        if (cond) \
         { \
             code_in; \
         } \
@@ -245,43 +275,59 @@ for (int i = 0; i < K*L_ker; i += blockDim.y) \
 __syncthreads(); \
 }
 
-// Loads matrix T
-#define load_T \
-    matrix_io(IDX_PS(2, 2), Tij_mzi(&p[idx_p], (float*) 0, &s[idx_s], &T[i1_T][i2_T][i3_T], (complex64 *) 0, false), \
-              Tij_identity(&T[i1_T][i2_T][i3_T], (complex64 *) 0))
-#define load_T_sym \
-    matrix_io(IDX_PS(2, 1), Tij_mzi_sym(&p[idx_p], (float *) 0, &s[idx_s], \
-                                        &T[i1_T][i2_T][i3_T], (float *) 0, mode, false), \
-              Tij_identity_sym(&T[i1_T][i2_T][i3_T], (float *) 0))
-#define load_T_orth \
-    matrix_io(IDX_P(1), Tij_mzi_orth(&p[idx_p], (float *) 0, &T[i1_T][i2_T][i3_T], (float *) 0, false), \
-              Tij_identity_orth(&T[i1_T][i2_T][i3_T], (float *) 0))
-// Loads matrix T and its differential dT.
-#define load_T_dT \
-    matrix_io(IDX_PS(2, 2), Tij_mzi(&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], true), \
-              Tij_identity(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]))
-#define load_T_dT_sym \
-    matrix_io(IDX_PS(2, 1), Tij_mzi_sym(&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T],  &dT[i1_T][i2_T][i3_T], \
-                          mode, true), \
-              Tij_identity_sym(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]))
-#define load_T_dT_orth \
-    matrix_io(IDX_P(1), Tij_mzi_orth(&p[idx_p], &dp[idx_p], &T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T], true), \
-              Tij_identity_orth(&T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T]))
-// Loads matrix T and initializes dT = 0 (for back-propagation)
-#define load_T_dT_bk \
-    matrix_io(IDX_PS(2, 2), Tij_mzi(&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], false), \
-              Tij_identity(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]))
-#define load_T_dT_bk_sym \
-    matrix_io(IDX_PS(2, 1), Tij_mzi_sym(&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], \
-                          mode, false), \
-              Tij_identity_sym(&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T]))
-#define load_T_dT_bk_orth \
-    matrix_io(IDX_P(1), Tij_mzi_orth(&p[idx_p], &dp[idx_p], &T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T], false), \
-              Tij_identity_orth(&T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T]))
+// Loads matrix T.
+#define ldT_m  Tij_mzi     (&p[idx_p], (float *) 0, &s[idx_s], &T[i1_T][i2_T][i3_T], (complex64 *) 0, false)
+#define ldT_s  Tij_mzi_sym (&p[idx_p], (float *) 0, &s[idx_s], &T[i1_T][i2_T][i3_T], (float *) 0, mode, false)
+#define ldT_o  Tij_mzi_orth(&p[idx_p], (float *) 0, &T[i1_T][i2_T][i3_T], (float *) 0, false)
+#define idT_m  Tij_identity     (&T[i1_T][i2_T][i3_T], (complex64 *) 0)
+#define idT_s  Tij_identity_sym (&T[i1_T][i2_T][i3_T], (float *) 0)
+#define idT_o  Tij_identity_orth(&T[i1_T][i2_T][i3_T], (float *) 0)
 
-#define save_dp \
-    matrix_io(IDX_PS(2, 2), dp_mzi(&p[idx_p], &s[idx_s], &dT[i1_T][i2_T][i3_T], &dp[idx_p]), )
-#define save_dp_sym \
-    matrix_io(IDX_PS(2, 1), dp_mzi_sym(&p[idx_p], &s[idx_s], &dT[i1_T][i2_T][i3_T], &dp[idx_p]), )
-#define save_dp_orth \
-    matrix_io(IDX_P(1), dp_mzi_orth(&dth[i1_T][i2_dth][i3_T], &dp[idx_p]), )
+#define load_T        matrix_io(IDX_PS(2, 2), cond_gen, ldT_m, idT_m)
+#define load_T_sym    matrix_io(IDX_PS(2, 1), cond_gen, ldT_s, idT_s)
+#define load_T_orth   matrix_io(IDX_P(1),     cond_gen, ldT_o, idT_o)
+#define loadft_T      matrix_io(IDX_PS(2, 2), cond_fft, ldT_m,      )
+#define loadft_T_sym  matrix_io(IDX_PS(2, 1), cond_fft, ldT_s,      )
+#define loadft_T_orth matrix_io(IDX_P(1),     cond_fft, ldT_o,      )
+
+// Loads matrix T and its differential dT.  For forward differentiation.
+#define ldTf_m  Tij_mzi     (&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], true)
+#define ldTf_s  Tij_mzi_sym (&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], mode, true)
+#define ldTf_o  Tij_mzi_orth(&p[idx_p], &dp[idx_p], &T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T], true)
+#define idTf_m  Tij_identity     (&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T])
+#define idTf_s  Tij_identity_sym (&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T])
+#define idTf_o  Tij_identity_orth(&T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T])
+
+#define load_T_dT        matrix_io(IDX_PS(2, 2), cond_gen, ldTf_m, idTf_m)
+#define load_T_dT_sym    matrix_io(IDX_PS(2, 1), cond_gen, ldTf_s, idTf_s)
+#define load_T_dT_orth   matrix_io(IDX_P(1),     cond_gen, ldTf_o, idTf_o)
+#define loadft_T_dT      matrix_io(IDX_PS(2, 2), cond_fft, ldTf_m,       )
+#define loadft_T_dT_sym  matrix_io(IDX_PS(2, 1), cond_fft, ldTf_s,       )
+#define loadft_T_dT_orth matrix_io(IDX_P(1),     cond_fft, ldTf_o,       )
+
+// Loads matrix T and initializes dT = 0.  For back-propagation.
+#define ldTb_m  Tij_mzi     (&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], false)
+#define ldTb_s  Tij_mzi_sym (&p[idx_p], &dp[idx_p], &s[idx_s], &T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T], mode, false)
+#define ldTb_o  Tij_mzi_orth(&p[idx_p], &dp[idx_p], &T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T], false)
+#define idTb_m  Tij_identity     (&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T])
+#define idTb_s  Tij_identity_sym (&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T])
+#define idTb_o  Tij_identity_orth(&T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T])
+
+#define load_T_dT_bk        matrix_io(IDX_PS(2, 2), cond_gen, ldTb_m, idTb_m)
+#define load_T_dT_bk_sym    matrix_io(IDX_PS(2, 1), cond_gen, ldTb_s, idTb_s)
+#define load_T_dT_bk_orth   matrix_io(IDX_P(1),     cond_gen, ldTb_o, idTb_o)
+#define loadft_T_dT_bk      matrix_io(IDX_PS(2, 2), cond_fft, ldTb_m,       )
+#define loadft_T_dT_bk_sym  matrix_io(IDX_PS(2, 1), cond_fft, ldTb_s,       )
+#define loadft_T_dT_bk_orth matrix_io(IDX_P(1),     cond_fft, ldTb_o,       )
+
+// Save dp to global memory.  For back-propagation.
+#define svdp_m  dp_mzi     (&p[idx_p], &s[idx_s], &dT[i1_T][i2_T][i3_T], &dp[idx_p])
+#define svdp_s  dp_mzi_sym (&p[idx_p], &s[idx_s], &dT[i1_T][i2_T][i3_T], &dp[idx_p])
+#define svdp_o  dp_mzi_orth(&dth[i1_T][i2_dth][i3_T], &dp[idx_p])
+
+#define save_dp        matrix_io(IDX_PS(2, 2), cond_gen, svdp_m, )
+#define save_dp_sym    matrix_io(IDX_PS(2, 1), cond_gen, svdp_s, )
+#define save_dp_orth   matrix_io(IDX_P(1),     cond_gen, svdp_o, )
+#define saveft_dp      matrix_io(IDX_PS(2, 2), cond_fft
+#define saveft_dp_sym  matrix_io(IDX_PS(2, 1), cond_fft, svdp_s, )
+#define saveft_dp_orth matrix_io(IDX_P(1),     cond_fft, svdp_o, )
