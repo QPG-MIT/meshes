@@ -202,7 +202,16 @@ __device__ void dp_mzi_orth(const float *dth, float *dp)
     atomicAdd(&dp[0], 0.5f*dth[0]);
 }
 
-__device__ __inline__ void matmult(const complex64 *T, complex64 &u1, complex64 &u2, complex64 &temp, bool cond)
+// Matrix T (symmetric)
+#define t11u(T, u) complex64(T[0], +T[32])*u
+#define t22u(T, u) complex64(T[0], -T[32])*u
+#define t12u(T, u) complex64(-T[64]*u.imag(), T[64]*u.real())
+// Matrix T^\dagger (symmetric)
+#define td11u(T, u) complex64(T[0], -T[32])*u
+#define td22u(T, u) complex64(T[0], +T[32])*u
+#define td12u(T, u) complex64(T[64]*u.imag(), -T[64]*u.real())
+
+__device__ __inline__ void matmult_mzi(const complex64 *T, complex64 &u1, complex64 &u2, complex64 &temp, bool cond)
 {
     // u_i -> T_{ij} u_j
     temp = T[0 ]*u1 + T[32]*u2;
@@ -210,20 +219,14 @@ __device__ __inline__ void matmult(const complex64 *T, complex64 &u1, complex64 
     if (cond)
         u1 = temp;
 }
-__device__ __inline__ void matmult_sym(const float *T, float &u1, float &v1, float &u2, float &v2, 
-                                       float &temp1, float &temp2, float &temp3, bool cond)
+__device__ __inline__ void matmult_sym(const float *T, complex64 &u1, complex64 &u2, 
+                                       complex64 &temp, bool cond)
 {
     // u_i -> T_{ij} u_j
-    temp1 =  T[0 ]*u1 - T[32]*v1 - T[64]*v2;
-    temp2 =  T[32]*u1 + T[0 ]*v1 + T[64]*u2;
-    temp3 =  T[0 ]*u2 + T[32]*v2 - T[64]*v1;
-    v2    = -T[32]*u2 + T[0 ]*v2 + T[64]*u1;
-    u2    =  temp3;
+    temp = t11u(T, u1) + t12u(T, u2);
+    u2   = t12u(T, u1) + t22u(T, u2);
     if (cond)
-    {
-        u1 = temp1;
-        v1 = temp2;
-    }
+        u1 = temp;
 }
 __device__ __inline__ void matmult_orth(const float *T, float &u1, float &u2, float &temp, bool cond)
 {
@@ -234,7 +237,7 @@ __device__ __inline__ void matmult_orth(const float *T, float &u1, float &u2, fl
 }
 
 
-__device__ __inline__ void matmult_d(const complex64 *T, const complex64 *dT, 
+__device__ __inline__ void matmult_d_mzi(const complex64 *T, const complex64 *dT, 
                                      complex64 &u1, complex64 &u2, complex64 &du1, complex64 &du2, 
                                      complex64 &temp, bool cond)
 {
@@ -244,25 +247,19 @@ __device__ __inline__ void matmult_d(const complex64 *T, const complex64 *dT,
     if (cond)
         du1 = temp;
     // u_i -> T_{ij} u_j
-    matmult(T, u1, u2, temp, cond);
+    matmult_mzi(T, u1, u2, temp, cond);
 }
-__device__ __inline__ void matmult_d_sym(const float *T, const float *dT, float &u1, float &v1, float &u2, float &v2, 
-                                         float &du1, float &dv1, float &du2, float &dv2,
-                                         float &temp1, float &temp2, float &temp3, bool cond)
+__device__ __inline__ void matmult_d_sym(const float *T, const float *dT, 
+                                         complex64 &u1, complex64 &u2, complex64 &du1, complex64 &du2,
+                                         complex64 &temp, bool cond)
 {
     // du_i -> T_{ij} du_j + dT_{ij} u_j
-    temp1 =  T[0 ]*du1 - T[32]*dv1 - T[64]*dv2 + dT[0 ]*u1 - dT[32]*v1 - dT[64]*v2;
-    temp2 =  T[32]*du1 + T[0 ]*dv1 + T[64]*du2 + dT[32]*u1 + dT[0 ]*v1 + dT[64]*u2; 
-    temp3 =  T[0 ]*du2 + T[32]*dv2 - T[64]*dv1 + dT[0 ]*u2 + dT[32]*v2 - dT[64]*v1;
-    dv2   = -T[32]*du2 + T[0 ]*dv2 + T[64]*du1 - dT[32]*u2 + dT[0 ]*v2 + dT[64]*u1;
-    du2   =  temp3;
+    temp = t11u(T, du1) + t12u(T, du2) + t11u(dT, u1) + t12u(dT, u2);
+    du2  = t22u(T, du2) + t12u(T, du1) + t22u(dT, u2) + t12u(dT, u1);
     if (cond)
-    {
-        du1 = temp1;
-        dv1 = temp2;
-    }
+        du1 = temp;
     // u_i -> T_{ij} u_j
-    matmult_sym(T, u1, v1, u2, v2, temp1, temp2, temp3, cond);
+    matmult_sym(T, u1, u2, temp, cond);
 }
 __device__ __inline__ void matmult_d_orth(const float *T, const float *dth, float &u1, float &u2, 
                                           float &du1, float &du2, float &temp, bool cond)
@@ -285,7 +282,7 @@ __device__ __inline__ void atomicAdd(complex64 *A, complex64 B)
 // Back-propagation of signals and gradients.
 // Here, (dJdu1, dJdu2) represent the gradients dJ/du*, which is conjugate to dJ/du.
 // TODO: check that conj(A)*B is properly compiled (takes as many FLOPS as A*B).  Otherwise, pre-conjugate T.
-__device__ __inline__ void matmult_bk(const complex64 *T, complex64 *dT, 
+__device__ __inline__ void matmult_bk_mzi(const complex64 *T, complex64 *dT, 
                                       complex64 &u1, complex64 &u2, complex64 &dJdu1, complex64 &dJdu2, 
                                       complex64 &temp, bool cond)
 {
@@ -303,36 +300,23 @@ __device__ __inline__ void matmult_bk(const complex64 *T, complex64 *dT,
     if (cond)
         dJdu1 = temp;
 }
-__device__ __inline__ void matmult_bk_sym(const float *T, float *dT, float &u1, float &v1, float &u2, float &v2, 
-                                          float &dJdu1, float &dJdv1, float &dJdu2, float &dJdv2, 
-                                          float &temp1, float &temp2, float &temp3, bool cond)
+__device__ __inline__ void matmult_bk_sym(const float *T, float *dT, complex64 &u1, complex64 &u2, 
+                                          complex64 &dJdu1, complex64 &dJdu2, complex64 &temp, bool cond)
 {
-    // u -> (T^dag) u
-    temp1 =  T[0 ]*u1 + T[32]*v1 + T[64]*v2;
-    temp2 = -T[32]*u1 + T[0 ]*v1 - T[64]*u2;
-    temp3 =  T[0 ]*u2 - T[32]*v2 + T[64]*v1;
-    v2    =  T[32]*u2 + T[0 ]*v2 - T[64]*u1;
-    u2    =  temp3;
+    // u_i -> (T^dag)_{ij} u_j = (T_{ji})^* u_j
+    temp = td11u(T, u1) + td12u(T, u2);  // conj(T[0 ])*u1 + conj(T[64])*u2;
+    u2   = td12u(T, u1) + td22u(T, u2);  // conj(T[32])*u1 + conj(T[96])*u2;
     if (cond)
-    {
-        u1 = temp1;
-        v1 = temp2;
-    }
-    // dJ/dT = (dJ/du*)* u^T
-    atomicAdd(&dT[0 ],  u1*dJdu1 + v1*dJdv1 + u2*dJdu2 + v2*dJdv2);
-    atomicAdd(&dT[32], -u1*dJdv1 + v1*dJdu1 + u2*dJdv2 - v2*dJdu2);
-    atomicAdd(&dT[64], -u1*dJdv2 + v1*dJdu2 - u2*dJdv1 + v2*dJdu1);
-    // dJ/du* -> (T^dag) dJ/du*
-    temp1 =  T[0 ]*dJdu1 + T[32]*dJdv1 + T[64]*dJdv2;
-    temp2 = -T[32]*dJdu1 + T[0 ]*dJdv1 - T[64]*dJdu2;
-    temp3 =  T[0 ]*dJdu2 - T[32]*dJdv2 + T[64]*dJdv1;
-    dJdv2 =  T[32]*dJdu2 + T[0 ]*dJdv2 - T[64]*dJdu1;
-    dJdu2 =  temp3;
+        u1 = temp;
+    // dJ/dT_{ij} = (dJ/du_i)_{out} (u_j)_{in} = (dJ/du_i^*)_{out}^* (u_j)_{in} 
+    atomicAdd(&dT[0 ],  u1.real()*dJdu1.real() + u1.imag()*dJdu1.imag() + u2.real()*dJdu2.real() + u2.imag()*dJdu2.imag());
+    atomicAdd(&dT[32], -u1.real()*dJdu1.imag() + u1.imag()*dJdu1.real() + u2.real()*dJdu2.imag() - u2.imag()*dJdu2.real());
+    atomicAdd(&dT[64], -u1.real()*dJdu2.imag() + u1.imag()*dJdu2.real() - u2.real()*dJdu1.imag() + u2.imag()*dJdu1.real());
+    // dJ/du_i^* -> (T^*)_{ij} dJ/du_j = (T_{ji}) dJ/du_j^*
+    temp  = td11u(T, dJdu1) + td12u(T, dJdu2);  // conj(T[0 ])*dJdu1 + conj(T[64])*dJdu2;
+    dJdu2 = td12u(T, dJdu1) + td22u(T, dJdu2);  // conj(T[32])*dJdu1 + conj(T[96])*dJdu2;
     if (cond)
-    {
-        dJdu1 = temp1;
-        dJdv1 = temp2;
-    }
+        dJdu1 = temp;
 }
 __device__ __inline__ void matmult_bk_orth(const float *T, float *d_th, float &u1, float &u2,
                                            float &dJdu1, float &dJdu2, float &temp, bool cond)
@@ -347,3 +331,7 @@ __device__ __inline__ void matmult_bk_orth(const float *T, float *d_th, float &u
     if (cond)
         dJdu1 = temp;
 }
+
+#undef t11u
+#undef t12u
+#undef t22u

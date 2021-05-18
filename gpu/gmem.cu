@@ -61,12 +61,13 @@ for i in range(0, B, 2*L):
     if (cond) {u_out[32*k + threadIdx.x] = \
         complex64(T[2*(l%(L0/2))+(k/K)][2*(k%K)  ][threadIdx.x], \
                   T[2*(l%(L0/2))+(k/K)][2*(k%K)+1][threadIdx.x]); }
-#define load_shflcode_sym(T, u, v) \
-    u[k] = T[2*(l%(L0/2))+((2*K*threadIdx.x + k)/32/K)][2*(((2*K*threadIdx.x + k)/32)%K)  ][(2*K*threadIdx.x + k)%32]; \
-    v[k] = T[2*(l%(L0/2))+((2*K*threadIdx.x + k)/32/K)][2*(((2*K*threadIdx.x + k)/32)%K)+1][(2*K*threadIdx.x + k)%32];
-#define save_shflcode_sym(T, u, v) \
-    T[2*(l%(L0/2))+((2*K*threadIdx.x + k)/32/K)][2*(((2*K*threadIdx.x + k)/32)%K)  ][(2*K*threadIdx.x + k)%32] = u[k]; \
-    T[2*(l%(L0/2))+((2*K*threadIdx.x + k)/32/K)][2*(((2*K*threadIdx.x + k)/32)%K)+1][(2*K*threadIdx.x + k)%32] = v[k];
+#define load_shflcode_sym(T, u) \
+    u[k] = complex64( \
+              T[2*(l%(L0/2))+((2*K*threadIdx.x+k)/32/K)][2*(((2*K*threadIdx.x+k)/32)%K)  ][(2*K*threadIdx.x+k)%32], \
+              T[2*(l%(L0/2))+((2*K*threadIdx.x+k)/32/K)][2*(((2*K*threadIdx.x+k)/32)%K)+1][(2*K*threadIdx.x+k)%32])
+#define save_shflcode_sym(T, u) \
+    T[2*(l%(L0/2))+((2*K*threadIdx.x+k)/32/K)][2*(((2*K*threadIdx.x+k)/32)%K)  ][(2*K*threadIdx.x+k)%32] = u[k].real(); \
+    T[2*(l%(L0/2))+((2*K*threadIdx.x+k)/32/K)][2*(((2*K*threadIdx.x+k)/32)%K)+1][(2*K*threadIdx.x+k)%32] = u[k].imag();
 
 #define load_readcode_orth(T, u_in, cond)    T[l%L0][k][threadIdx.x] = cond ? u_in[32*k + threadIdx.x] : 0
 #define load_shflcode_orth(T, u)             u[k] = T[l%L0][(2*K*threadIdx.x + k)/32][(2*K*threadIdx.x + k)%32]
@@ -109,42 +110,42 @@ for (int i = 0; i < b; i += L_inc) \
 }
 
 // Loads u_in -> u.
-#define load_u(u, u_in) \
+#define load_u_mzi(u, u_in) \
     load_generic(2*L0, load_readcode(T, u_in, true), load_shflcode(T, u), u[k] = 0)
-#define load_u_sym(u, v, u_in) \
-    load_generic(L0/2, load_readcode_sym(T, u_in, true), load_shflcode_sym(T, u, v), u[k] = 0; v[k] = 0)
+#define load_u_sym(u, u_in) \
+    load_generic(L0/2, load_readcode_sym(T, u_in, true), load_shflcode_sym(T, u), u[k] = 0)
 #define load_u_orth(u, u_in) \
     load_generic(L0, load_readcode_orth(T, u_in, true), load_shflcode_orth(T, u), u[k] = 0)
 
 // Loads u_in -> u, du_in -> du
-#define load_u_du(u, du, u_in, du_in) \
+#define load_u_du_mzi(u, du, u_in, du_in) \
     load_generic(2*L0, \
         load_readcode(T, u_in, true); load_readcode(dT, du_in, du_in), \
         load_shflcode(T, u); load_shflcode(dT, du), \
         u[k] = 0; du[k] = 0)
-#define load_u_du_sym(u, v, du, dv, u_in, du_in) \
+#define load_u_du_sym(u, du, u_in, du_in) \
     load_generic(L0/2, \
         load_readcode_sym(T, u_in, true); load_readcode_sym(dT, du_in, du_in), \
-        load_shflcode_sym(T, u, v); load_shflcode_sym(dT, du, dv), \
-        u[k] = 0; v[k] = 0; du[k] = 0; dv[k] = 0)
+        load_shflcode_sym(T, u); load_shflcode_sym(dT, du), \
+        u[k] = 0; du[k] = 0)
 #define load_u_du_orth(u, du, u_in, du_in) \
     load_generic(L0, load_readcode_orth(T, u_in, true), load_shflcode_orth(T, u), u[k] = 0); \
     load_generic(L0, load_readcode_orth(T, du_in, true), load_shflcode_orth(T, du), du[k] = 0); \
 // Saves u -> u_out.
-#define save_u(u, u_out) \
+#define save_u_mzi(u, u_out) \
     save_generic(2*L0, save_shflcode(T, u), save_writcode(T, u_out, true))
-#define save_u_sym(u, v, u_out) \
-    save_generic(L0/2, save_shflcode_sym(T, u, v), save_writcode_sym(T, u_out, true))
+#define save_u_sym(u, u_out) \
+    save_generic(L0/2, save_shflcode_sym(T, u), save_writcode_sym(T, u_out, true))
 #define save_u_orth(u, u_out) \
     save_generic(L0, save_shflcode_orth(T, u), save_writcode_orth(T, u_out, true))
 // Saves u -> u_out, du -> du_out.
-#define save_u_du(u, du, u_out, du_out) \
+#define save_u_du_mzi(u, du, u_out, du_out) \
     save_generic(2*L0, \
         save_shflcode(T, u); save_shflcode(dT, du), \
         save_writcode(T, u_out, true); save_writcode(dT, du_out, du_out))
-#define save_u_du_sym(u, v, du, dv, u_out, du_out) \
+#define save_u_du_sym(u, du, u_out, du_out) \
     save_generic(L0/2, \
-        save_shflcode_sym(T, u, v); save_shflcode_sym(dT, du, dv), \
+        save_shflcode_sym(T, u); save_shflcode_sym(dT, du), \
         save_writcode_sym(T, u_out, true); save_writcode_sym(dT, du_out, du_out))
 #define save_u_du_orth(u, du, u_out, du_out) \
     save_generic(L0, save_shflcode_orth(T, u), save_writcode_orth(T, u_out, true)); \
@@ -169,23 +170,6 @@ for (L0, nL, bd_y) in zip([36,20,14,11,7,5,4,2], [8,8,16,16,32,32,32,32], [8,10,
             shifts_cache[:] = -1
     print ((np.concatenate(shifts_cache_list)[:len(shifts)] == shifts).all())        
 */
-#define load_pos_cache(sign) \
-    if (x % L_preload == 0) \
-    { \
-        for (int i = 0; i < L_preload; i += 32*blockDim.y) \
-        { \
-            int id = i + 32*threadIdx.y + threadIdx.x; \
-            if (id < L_preload && x + id < L) \
-            { \
-                lens_cache[id]   = lens[sign*(x + id)]; \
-                shifts_cache[id] = shifts[sign*(x + id)]; \
-            } \
-        } \
-        __syncthreads(); \
-    }
-#define load_pos_cache_fwd load_pos_cache(+1)
-#define load_pos_cache_rev load_pos_cache(-1)
-
 #define load_cache(code) \
     if (x % L_preload == 0) \
     { \
@@ -196,13 +180,13 @@ for (L0, nL, bd_y) in zip([36,20,14,11,7,5,4,2], [8,8,16,16,32,32,32,32], [8,10,
         } \
         __syncthreads(); \
     }
-/*  TODO -- check this code.  Replacement for old load_pos_cache, above.
+
 #define load_pos_cache(sign) \
     load_cache(lens_cache[id]   = lens[sign*(x + id)]; \
                shifts_cache[id] = shifts[sign*(x + id)])
 #define load_pos_cache_fwd load_pos_cache(+1)
 #define load_pos_cache_rev load_pos_cache(-1)
-//*/
+
 #define load_strides_cache(sign) \
     load_cache(strides_cache[id] = strides[sign*(x + id)])
 #define load_strides_cache_fwd load_strides_cache(+1)
@@ -240,9 +224,9 @@ for i in range(0, K*L, B):
 (T.reshape(L*32*K, 4) == np.array([p[::2], p[1::2], s[::2], s[1::2]]).T).all()
 */
 
-#define i1_T (l/pack_T)
-#define i2_T (stride_T*(dm%K + K*(l%pack_T)))
-#define i2_dth (stride_dth*(dm%K + K*(l%pack_T)))
+#define i1_T (l/1)
+#define i2_T (stride_T*(dm%K + K*(l%1)))
+#define i2_dth (stride_dth*(dm%K + K*(l%1)))
 #define i3_T (dm/K)
 
 #define IDX_PS(stride_p, stride_s)   int idx_p = ldp*l + stride_p*dm, idx_s = s ? (lds*l + stride_s*dm) : 0
@@ -283,10 +267,10 @@ __syncthreads(); \
 #define idT_s  Tij_identity_sym (&T[i1_T][i2_T][i3_T], (float *) 0)
 #define idT_o  Tij_identity_orth(&T[i1_T][i2_T][i3_T], (float *) 0)
 
-#define load_T        matrix_io(IDX_PS(2, 2), cond_gen, ldT_m, idT_m)
+#define load_T_mzi    matrix_io(IDX_PS(2, 2), cond_gen, ldT_m, idT_m)
 #define load_T_sym    matrix_io(IDX_PS(2, 1), cond_gen, ldT_s, idT_s)
 #define load_T_orth   matrix_io(IDX_P(1),     cond_gen, ldT_o, idT_o)
-#define loadft_T      matrix_io(IDX_PS(2, 2), cond_fft, ldT_m,      )
+#define loadft_T_mzi  matrix_io(IDX_PS(2, 2), cond_fft, ldT_m,      )
 #define loadft_T_sym  matrix_io(IDX_PS(2, 1), cond_fft, ldT_s,      )
 #define loadft_T_orth matrix_io(IDX_P(1),     cond_fft, ldT_o,      )
 
@@ -298,10 +282,10 @@ __syncthreads(); \
 #define idTf_s  Tij_identity_sym (&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T])
 #define idTf_o  Tij_identity_orth(&T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T])
 
-#define load_T_dT        matrix_io(IDX_PS(2, 2), cond_gen, ldTf_m, idTf_m)
+#define load_T_dT_mzi    matrix_io(IDX_PS(2, 2), cond_gen, ldTf_m, idTf_m)
 #define load_T_dT_sym    matrix_io(IDX_PS(2, 1), cond_gen, ldTf_s, idTf_s)
 #define load_T_dT_orth   matrix_io(IDX_P(1),     cond_gen, ldTf_o, idTf_o)
-#define loadft_T_dT      matrix_io(IDX_PS(2, 2), cond_fft, ldTf_m,       )
+#define loadft_T_dT_mzi  matrix_io(IDX_PS(2, 2), cond_fft, ldTf_m,       )
 #define loadft_T_dT_sym  matrix_io(IDX_PS(2, 1), cond_fft, ldTf_s,       )
 #define loadft_T_dT_orth matrix_io(IDX_P(1),     cond_fft, ldTf_o,       )
 
@@ -313,10 +297,10 @@ __syncthreads(); \
 #define idTb_s  Tij_identity_sym (&T[i1_T][i2_T][i3_T], &dT[i1_T][i2_T][i3_T])
 #define idTb_o  Tij_identity_orth(&T[i1_T][i2_T][i3_T], &dth[i1_T][i2_dth][i3_T])
 
-#define load_T_dT_bk        matrix_io(IDX_PS(2, 2), cond_gen, ldTb_m, idTb_m)
+#define load_T_dT_bk_mzi    matrix_io(IDX_PS(2, 2), cond_gen, ldTb_m, idTb_m)
 #define load_T_dT_bk_sym    matrix_io(IDX_PS(2, 1), cond_gen, ldTb_s, idTb_s)
 #define load_T_dT_bk_orth   matrix_io(IDX_P(1),     cond_gen, ldTb_o, idTb_o)
-#define loadft_T_dT_bk      matrix_io(IDX_PS(2, 2), cond_fft, ldTb_m,       )
+#define loadft_T_dT_bk_mzi  matrix_io(IDX_PS(2, 2), cond_fft, ldTb_m,       )
 #define loadft_T_dT_bk_sym  matrix_io(IDX_PS(2, 1), cond_fft, ldTb_s,       )
 #define loadft_T_dT_bk_orth matrix_io(IDX_P(1),     cond_fft, ldTb_o,       )
 
@@ -325,9 +309,9 @@ __syncthreads(); \
 #define svdp_s  dp_mzi_sym (&p[idx_p], &s[idx_s], &dT[i1_T][i2_T][i3_T], &dp[idx_p])
 #define svdp_o  dp_mzi_orth(&dth[i1_T][i2_dth][i3_T], &dp[idx_p])
 
-#define save_dp        matrix_io(IDX_PS(2, 2), cond_gen, svdp_m, )
+#define save_dp_mzi    matrix_io(IDX_PS(2, 2), cond_gen, svdp_m, )
 #define save_dp_sym    matrix_io(IDX_PS(2, 1), cond_gen, svdp_s, )
 #define save_dp_orth   matrix_io(IDX_P(1),     cond_gen, svdp_o, )
-#define saveft_dp      matrix_io(IDX_PS(2, 2), cond_fft
+#define saveft_dp_mzi  matrix_io(IDX_PS(2, 2), cond_fft
 #define saveft_dp_sym  matrix_io(IDX_PS(2, 1), cond_fft, svdp_s, )
 #define saveft_dp_orth matrix_io(IDX_P(1),     cond_fft, svdp_o, )

@@ -10,71 +10,78 @@
 //
 // History:
 //   04/05/21: First working CUDA code.
+//   05/17/21: Shortened and simplified, merging the 3 crossing types.
 
 
-#define L_ker (L0*pack_T)  // Actual number of layers stored in the kernel = L0*pack_T (default L0, sym: 2*L0).
+#define L_ker (L0)  // Actual number of layers stored in the kernel = L0 (default L0, sym: 2*L0).
 #define L_preload (L0*nL)  // Number of shifts / lens pre-loaded.
 
-#if CROSSING_TYPE == MZI
-__global__ void fname(int N, int L, int B, 
-                      int *lens, int *shifts, 
-                      float *p, float *dp, int ldp, 
-                      float *s, int lds, 
-                      complex64 *u_in,  complex64 *du_in,
-                      complex64 *u_out, complex64 *du_out, int ldu, int mode)
-{
-    const int pack_T = 1; // Packing factor 4 / (# T params) (default: 1, symmetric Tij: 2)
-    const int stride_T = 4 / pack_T;
+#if   CROSSING_TYPE == MZI
+    #define stride_T   4
+    #define stride_dT  4
+    #define define_T   __shared__ complex64 T[L0][4*K][32], dT[L0][4*K][32]
+    #define load_u_du  load_u_du_mzi(u, du, u_in, du_in)
+    #define load_T_dT  load_T_dT_mzi
+    #define save_u_du  save_u_du_mzi(u, du, u_out, du_out)
+    #define matmult_d  matmult_d_mzi
+    #define scalar     complex64
+#elif CROSSING_TYPE == SYM
+    #define stride_T   3
+    #define stride_dT  3
+    #define define_T   __shared__ float T[L0][3*K][32], dT[L0][3*K][32]
+    #define load_u_du  load_u_du_sym(u, du, u_in, du_in)
+    #define load_T_dT  load_T_dT_sym
+    #define save_u_du  save_u_du_sym(u, du, u_out, du_out)
+    #define matmult_d  matmult_d_sym
+    #define scalar     complex64
+#else
+    #define stride_T   2
+    #define stride_dT  1
+    #define dth        dT
+    #define stride_dth stride_dT
+    #define define_T   __shared__ float T[L0][2*K][32], dth[L0][K][32]
+    #define load_u_du  load_u_du_orth(u, du, u_in, du_in)
+    #define load_T_dT  load_T_dT_orth
+    #define save_u_du  save_u_du_orth(u, du, u_out, du_out)
+    #define matmult_d  matmult_d_orth
+    #define scalar     float
+#endif
 
-    // There are blockDim.y warps in each block (blockDim.x = 32).  Each references a separate instance.
-	// The blocks are therefore offset by blockDim.y instances, i.e. a pointer offset of ld * blockDim.y
-	// Kernel doesn't support multiplexing over p, s.  This is assumed to be easier by calling separate kernels.
-	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
+
+__global__ void fname(int N, int L, int B, int *lens, int *shifts, 
+                      float *p, float *dp, int ldp, float *s, int lds, 
+                      scalar *u_in,  scalar *du_in,
+                      scalar *u_out, scalar *du_out, int ldu, int mode)
+{
+    // Definitions and Initializations.
+	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);       // Pointer shift, one warp per instance.
 	u_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
     if (du_in)  {du_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
     if (du_out) {du_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
-    
-    // Number of active warps (this block's mini-batch).
-    int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);
-		
-	// Transfer matrices.
-	// The b^th matrix of column c goes in T[c][4(b%K):4(b%K)+4][b/K].
-	__shared__ complex64 T[L0][4*K][32];
-	__shared__ complex64 dT[L0][4*K][32];
-    __shared__ int shifts_cache[L_preload];
-    __shared__ int lens_cache[L_preload];
-    
-	// State.  The i^th waveguide is u[i%K] of thread i/K.
-	complex64 u[2*K];
-	complex64 du[2*K];
-	
-	// Load u coalesced, gmem -> smem.  Macro defined in meshprop.cu.
-    load_u_du(u, du, u_in, du_in);
+    int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);     // # active warps
+    define_T;                                                   // Transfer matrices T, dT (dim=[L0][s*K][32]).
+    __shared__ int shifts_cache[L0*nL], lens_cache[L0*nL];      // Cache of lengths, shifts
+	scalar u[2*K], du[2*K];                                     // State and forward derivative.
+    load_u_du;                                                  // Load u and du, gmem -> smem [macro: gmem.cu].
 
+    // Propagate fields and derivatives through the mesh.
 	for (int x = 0; x < L; x += L_ker)
     {
-        // Number of layers in *this* block.  Normally L0, except if last block is truncated.
-        int L_blk = (L_ker < L-x) ? L_ker : L-x;
+        int L_blk = (L_ker < L-x) ? L_ker : L-x;                // Layers in block = min(L0, L-x)
+        load_pos_cache_fwd;                                     // Occasionally reload cache of shifts / lengths.
+        load_T_dT;                                              // Load transfer matrices [macro: gmem.cu].
 
-        // Every L0*nL layers, reload the cache of shifts and lengths.  This is done less frequently than the
-        load_pos_cache_fwd;
-
-        // Load T (coalesced in gmem, strided in smem).  
-        load_T_dT;
-
-        // Iterate through L_blk layers.
-        for (int l = 0; l < L_blk; l++)
+        for (int l = 0; l < L_blk; l++)                         // Iterate through L_blk layers.
         {
-            complex64 temp, u_2k, du_2k;
-            if (shifts_cache[(x+l) % L_preload] % 2)
+            scalar temp, u_2k, du_2k;
+            if (shifts_cache[(x+l) % L_preload] % 2)            // Misaligned MZIs: need warp shuffle.
             {
-                // Couple (u[1], u[2]), (u[3], u[4]), ... (u[2K-3], u[2K-2]).
-                for (int i = 0; i < K-1; i++)
-                    matmult_d(&T[l][4*i][threadIdx.x], &dT[l][4*i][threadIdx.x], 
+                for (int i = 0; i < K-1; i++)                   // Couple (u[1], u[2]), ..., (u[2K-3], u[2K-2])
+                    matmult_d(&T[l][stride_T*i][threadIdx.x], &dT[l][stride_dT*i][threadIdx.x], 
                               u[2*i+1], u[2*i+2], du[2*i+1], du[2*i+2], temp, true);
-                // Couple (u[2K-1], u[0]).  The latter comes from the next thread up.  Warp shuffle.
+                // Couple (u[2K-1], u[0]) with warp shuffle.  
                 u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); du_2k = __shfl_down_sync(0xffffffffu, du[0], 1, 32);
-                matmult_d(&T[l][4*K-4][threadIdx.x], &dT[l][4*K-4][threadIdx.x], 
+                matmult_d(&T[l][stride_T*K-stride_T][threadIdx.x], &dT[l][stride_dT*K-stride_dT][threadIdx.x], 
                           u[2*K-1], u_2k, du[2*K-1], du_2k, temp, threadIdx.x != 31);
                 u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); du_2k = __shfl_up_sync(0xffffffffu, du_2k, 1, 32);
                 if (threadIdx.x)
@@ -83,11 +90,10 @@ __global__ void fname(int N, int L, int B,
                     du[0] = du_2k;
                 }
             }
-            else
+            else                                                // Aligned MZIs.  Easy case!
             {
-                // Easy case!  Couple (u[0], u[1]), (u[2], u[3]), ... (u[2K-2], u[2K-1]).
-                for (int i = 0; i < K; i++)
-                    matmult_d(&T[l][4*i][threadIdx.x], &dT[l][4*i][threadIdx.x], 
+                for (int i = 0; i < K; i++)                     // Couple (u[0], u[1]), ... (u[2K-2], u[2K-1]).
+                    matmult_d(&T[l][stride_T*i][threadIdx.x], &dT[l][stride_dT*i][threadIdx.x], 
                               u[2*i], u[2*i+1], du[2*i], du[2*i+1], temp, true);
             }
         }
@@ -95,125 +101,12 @@ __global__ void fname(int N, int L, int B,
         p  += L_ker * ldp;
         dp += L_ker * ldp;
         if (s) {s += L_ker * lds;}
-        
-        __syncthreads();  // TODO -- is this necessary?
-    }
-
-	// Write data to output.  Same permutation as for input, but reversed.  Macro from meshprop.cu.
-    save_u_du(u, du, u_out, du_out);
-}
-#endif
-
-
-
-#if CROSSING_TYPE == SYM
-__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, float *s, int lds, 
-                      complex64 *u_in, complex64 *du_in, complex64 *u_out, complex64 *du_out, int ldu, int mode)
-{
-    const int pack_T = 1, stride_T = 3;
-	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
-	u_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
-    if (du_in)  {du_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
-    if (du_out) {du_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
-    int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);     // # active warps
-    
-	__shared__ float T[L0][3*K][32], dT[L0][3*K][32];                   // Transfer matrices
-    __shared__ int shifts_cache[L_preload], lens_cache[L_preload];      // Index cache
-	float u[2*K], v[2*K], du[2*K], dv[2*K];                             // State and gradient, in registers.
-	
-    load_u_du_sym(u, v, du, dv, u_in, du_in);           // Load data to u, du.
-	for (int x = 0; x < L; x += L_ker)
-    {
-        int L_blk = (L_ker < L-x) ? L_ker : L-x;        // Layers in this block.
-        load_pos_cache_fwd;                             // Refresh cache.
-        load_T_dT_sym;                                  // Load matrices for this block.
-        for (int l = 0; l < L_blk; l++)                 // Iterate through L_blk layers.
-        {
-            float temp1, temp2, temp3, u_2k, v_2k, du_2k, dv_2k;
-            if (shifts_cache[(x+l) % L_preload] % 2)        // MZIs not aligned with threads.  Warp shuffle.
-            {
-                for (int i = 0; i < K-1; i++)
-                    matmult_d_sym(&T[l][3*i][threadIdx.x], &dT[l][3*i][threadIdx.x], 
-                                  u[2*i+1], v[2*i+1], u[2*i+2], v[2*i+2], 
-                                  du[2*i+1], dv[2*i+1], du[2*i+2], dv[2*i+2], 
-                                  temp1, temp2, temp3, true);
-                u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); 
-                v_2k = __shfl_down_sync(0xffffffffu, v[0], 1, 32);
-                du_2k = __shfl_down_sync(0xffffffffu, du[0], 1, 32); 
-                dv_2k = __shfl_down_sync(0xffffffffu, dv[0], 1, 32);
-                matmult_d_sym(&T[l][3*K-3][threadIdx.x], &dT[l][3*K-3][threadIdx.x], 
-                              u[2*K-1], v[2*K-1], u_2k, v_2k, 
-                              du[2*K-1], dv[2*K-1], du_2k, dv_2k, 
-                              temp1, temp2, temp3, threadIdx.x != 31);
-                u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); 
-                v_2k = __shfl_up_sync(0xffffffffu, v_2k, 1, 32);
-                du_2k = __shfl_up_sync(0xffffffffu, du_2k, 1, 32); 
-                dv_2k = __shfl_up_sync(0xffffffffu, dv_2k, 1, 32);
-                if (threadIdx.x) {u[0] = u_2k; v[0] = v_2k; du[0] = du_2k; dv[0] = dv_2k;}
-            }
-            else
-                for (int i = 0; i < K; i++)                 // MZIs aligned with threads.  Easy case!
-                    matmult_d_sym(&T[l][3*i][threadIdx.x], &dT[l][3*i][threadIdx.x], 
-                                  u[2*i], v[2*i], u[2*i+1], v[2*i+1], 
-                                  du[2*i], dv[2*i], du[2*i+1], dv[2*i+1], 
-                                  temp1, temp2, temp3, true);
-        }
-        p += L_ker * ldp; dp += L_ker * ldp;
-        if (s) {s += L_ker * lds;}
         __syncthreads();
     }
-    save_u_du_sym(u, v, du, dv, u_out, du_out);         // Save output.
+
+	// Write data to output [macro: gmem.cu].
+    save_u_du;
 }
-#endif
-
-
-
-#if CROSSING_TYPE == ORTH
-__global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, float *dp, int ldp, float *s, int lds, 
-                      float *u_in, float *du_in, float *u_out, float *du_out, int ldu, int mode)
-{
-    const int pack_T = 1, stride_T = 2, stride_dth = 1;
-
-	u_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
-	u_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);
-    if (du_in)  {du_in  += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
-    if (du_out) {du_out += ldu * (blockDim.y*blockIdx.x + threadIdx.y);}
-    int b = (blockDim.y*(1 + blockIdx.x) < B) ? (blockDim.y) : (B - blockDim.y*blockIdx.x);     // Batch size.
-	__shared__ float T[L0][2*K][32], dth[L0][K][32];                    // Transfer matrix & d_theta
-    __shared__ int shifts_cache[L_preload], lens_cache[L_preload];      // Index cache.
-	float u[2*K], du[2*K];                                              // State, registers.
-	
-    load_u_du_orth(u, du, u_in, du_in);                         // Load data from memory.
-	for (int x = 0; x < L; x += L_ker)                          // Loop over layer blocks.
-    {
-        int L_blk = (L_ker < L-x) ? L_ker : L-x;                // Layers in this block.
-        load_pos_cache_fwd;                                     // Refresh cache.
-        load_T_dT_orth;                                         // Load T & d_theta.
-        for (int l = 0; l < L_blk; l++)                         // Iterate through layers.
-        {
-            float temp, u_2k, du_2k;
-            if (shifts_cache[(x+l) % L_preload] % 2)            // Misaligned MZIs: warp shuffle.
-            {
-                for (int i = 0; i < K-1; i++)
-                    matmult_d_orth(&T[l][2*i][threadIdx.x], &dth[l][i][threadIdx.x], 
-                                   u[2*i+1], u[2*i+2], du[2*i+1], du[2*i+2], temp, true);
-                u_2k = __shfl_down_sync(0xffffffffu, u[0], 1, 32); du_2k = __shfl_down_sync(0xffffffffu, du[0], 1, 32);
-                matmult_d_orth(&T[l][2*K-2][threadIdx.x], &dth[l][K-1][threadIdx.x], 
-                               u[2*K-1], u_2k, du[2*K-1], du_2k, temp, threadIdx.x != 31);
-                u_2k = __shfl_up_sync(0xffffffffu, u_2k, 1, 32); du_2k = __shfl_up_sync(0xffffffffu, du_2k, 1, 32);
-                if (threadIdx.x) {u[0] = u_2k; du[0] = du_2k;}
-            }
-            else                                                // Aligned MZIs.  Easy case!
-                for (int i = 0; i < K; i++)
-                    matmult_d_orth(&T[l][2*i][threadIdx.x], &dth[l][i][threadIdx.x], 
-                                   u[2*i], u[2*i+1], du[2*i], du[2*i+1], temp, true);
-        }
-        p  += L_ker * ldp; dp += L_ker * ldp;
-        __syncthreads();
-    }
-    save_u_du_orth(u, du, u_out, du_out);                       // Save output.
-}
-#endif
 
 
 #undef L_ker
@@ -222,3 +115,15 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts, float *p, flo
 #undef L0
 #undef nL
 #undef fname
+#undef stride_T
+#undef stride_dT
+#undef define_T
+#undef load_u_du
+#undef load_T_dT
+#undef save_u_du
+#undef matmult_d
+#undef scalar
+#if CROSSING_TYPE == ORTH
+    #undef dth
+    #undef stride_dth
+#endif
