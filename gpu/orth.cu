@@ -14,6 +14,9 @@
 // Inference / forward propagation of fields, no derivative terms.  
 // (K=1-3 optimized for 24k smem, others for 48k smem)
 //*
+#if FWDPROP
+#if ALL_SIZES
+
 #define K 1
 #define L0 68
 #define nL 12
@@ -32,11 +35,15 @@
 #define fname fwdprop_N192_orth
 #include "fwdprop.cu"
 
+#endif
+
 #define K 4
 #define L0 44
 #define nL 10
 #define fname fwdprop_N256_orth
 #include "fwdprop.cu"
+
+#if ALL_SIZES
 
 #define K 5
 #define L0 35
@@ -61,11 +68,17 @@
 #define nL 32
 #define fname fwdprop_N640_orth
 #include "fwdprop.cu"
+
+#endif
+#endif
 //*/
 
 // Forward propagation of fields and gradients.
 // (K=1-2 optimized for 24k smem, others for 48k smem)
 //*
+#if FWDDIFF
+#if ALL_SIZES
+
 #define K 1
 #define L0 48
 #define nL 16
@@ -84,11 +97,15 @@
 #define fname fwddiff_N192_orth
 #include "fwddiff.cu"
 
+#endif
+
 #define K 4
 #define L0 26
 #define nL 32
 #define fname fwddiff_N256_orth
 #include "fwddiff.cu"
+
+#if ALL_SIZES
 
 #define K 5
 #define L0 22
@@ -113,11 +130,17 @@
 #define nL 32
 #define fname fwddiff_N640_orth
 #include "fwddiff.cu"
+
+#endif
+#endif
 //*/
 
 // Back-propagation of fields and gradients.
 // (K=1-2 optimized for 24k smem, others for 48k smem)
 //*
+#if BACKDIFF
+#if ALL_SIZES
+
 #define K 1
 #define L0 48
 #define nL 16
@@ -136,11 +159,15 @@
 #define fname backdiff_N192_orth
 #include "backdiff.cu"
 
+#endif
+
 #define K 4
 #define L0 26
 #define nL 32
 #define fname backdiff_N256_orth
 #include "backdiff.cu"
+
+#if ALL_SIZES
 
 #define K 5
 #define L0 22
@@ -165,6 +192,9 @@
 #define nL 32
 #define fname backdiff_N640_orth
 #include "backdiff.cu"
+
+#endif
+#endif
 //*/
 
 #undef CROSSING_TYPE

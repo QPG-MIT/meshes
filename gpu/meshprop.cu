@@ -1,5 +1,5 @@
 // meshes/gpu/meshprop.cu
-// Ryan Hamerly, 4/3/21
+// Ryan Hamerly, 4/10/21
 //
 // nvcc meshprop.cu -I/usr/local/lib/python3.5/dist-packages/cupy/core/include -arch=sm_35 -Xptxas -v --cubin
 //
@@ -26,66 +26,27 @@ typedef complex<float> complex64;
 
 extern "C" {
 	    
-// 1: Standard crossing
-// 2: Symmetric crossing 
-// 3: Orthogonal crossing
-#define MZI  1
-#define SYM  2
-#define ORTH 3
+#define MZI         1       // Standard crossing          
+#define SYM         2       // Symmetric crossing
+#define ORTH        3       // Orthogonal crossing
 
 
-#include "mzi.cu"
-#include "sym.cu"
-#include "orth.cu"
+#define ALL_SIZES   1       // Include all N=64-512.  Set to false for faster compilation bug testing.
+#define FWDPROP     1       // Include fwdprop.cu
+#define FWDDIFF     1       // Include fwddiff.cu
+#define BACKDIFF    1       // Include backdiff.cu
+#define HAS_MZI     1       // Include MZI crossings.
+#define HAS_SYM     1       // Include symmetric crossings.
+#define HAS_ORTH    1       // Include orthogonal crossings.
 
+#if HAS_MZI
+    #include "mzi.cu"
+#endif
+#if HAS_SYM
+    #include "sym.cu"
+#endif
+#if HAS_ORTH
+    #include "orth.cu"
+#endif
 
-// TESTING SANDBOX
-// ------------------------------------------------------------------------------------------
-/*
-#define CROSSING_TYPE  SYM
-
-#define K 4
-#define L0 11
-#define nL 12
-#define fname fwdprop_N256_sym
-#include "fwdprop.cu"    
-  
-#define K 4
-#define L0 11
-#define nL 12
-#define fname fwddiff_N256_sym
-#include "fwddiff.cu"
-
-#define K 4
-#define L0 11
-#define nL 12
-#define fname backdiff_N256_sym
-#include "backdiff.cu"
-
-#undef  CROSSING_TYPE
-#define CROSSING_TYPE  MZI
-
-#define K 4
-#define L0 11
-#define nL 12
-#define fname fwdprop_N256_mzi
-#include "fwdprop.cu"
-
-#define K 4
-#define L0 5
-#define nL 32
-#define fname fwddiff_N256_mzi
-#include "fwddiff.cu"
-
-#define K 4
-#define L0 5
-#define nL 32
-#define fname backdiff_N256_mzi
-#include "backdiff.cu"
-    
-#undef  CROSSING_TYPE
-//*/
-
-
-    
 }

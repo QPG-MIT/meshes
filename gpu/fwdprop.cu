@@ -1,5 +1,5 @@
 // meshes/gpu/fwdprop.cu
-// Ryan Hamerly, 4/3/21
+// Ryan Hamerly, 5/19/21
 //
 // Implements the foward-propagation function fwdprop_N[64*K](), where [64*K] is the mesh size.  Requires the following
 // preprocessor directives:
@@ -12,36 +12,10 @@
 //   04/03/21: Created this file.  First working CUDA code.
 //   04/05/21: Moved the global memory I/O stuff to its own macros in gmem.cu.
 //   05/17/21: Shortened and simplified, merging the 3 crossing types.
+//   05/19/21: Spun off macros to consts.cuh.
 
 
-#define L_ker (L0)  // Actual number of layers stored in the kernel = L0
-#define L_preload (L0*nL)  // Number of shifts / lens pre-loaded.
-
-#if   CROSSING_TYPE == MZI
-    #define stride_T  4
-    #define define_T  __shared__ complex64 T[L0][4*K][32]
-    #define load_u    load_u_mzi(u, u_in)
-    #define load_T    load_T_mzi
-    #define save_u    save_u_mzi(u, u_out)
-    #define matmult   matmult_mzi
-    #define scalar    complex64
-#elif CROSSING_TYPE == SYM
-    #define stride_T  3
-    #define define_T  __shared__ float T[L0][3*K][32]
-    #define load_u    load_u_sym(u, u_in)
-    #define load_T    load_T_sym
-    #define save_u    save_u_sym(u, u_out)
-    #define matmult   matmult_sym
-    #define scalar    complex64
-#else
-    #define stride_T  2
-    #define define_T  __shared__ float T[L0][2*K][32]
-    #define load_u    load_u_orth(u, u_in)
-    #define load_T    load_T_orth
-    #define save_u    save_u_orth(u, u_out)
-    #define matmult   matmult_orth
-    #define scalar    float
-#endif
+#include "consts.cuh"
 
 
 __global__ void fname(int N, int L, int B, int *lens, int *shifts, 
@@ -93,17 +67,4 @@ __global__ void fname(int N, int L, int B, int *lens, int *shifts,
     save_u;
 }
 
-
-#undef L_ker
-#undef L_preload
-#undef K
-#undef L0
-#undef nL
-#undef fname
-#undef stride_T
-#undef define_T
-#undef load_u
-#undef load_T
-#undef save_u
-#undef matmult
-#undef scalar
+#include "consts.cuh"

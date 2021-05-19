@@ -20,15 +20,17 @@ from cupy_backends.cuda.api.driver import CUDADriverError
 # Step 1: Accuracy Test.
 # Runs a bunch of parameters, checks GPU result against block-diagonal matrix multiplication.
 # Randomly varies N, L, B, nWarp, shifts, lens.
-def test_fwd_acc(diff=False, mode='mzi'):
+def test_fwd_acc(diff=False, mode='mzi', fft=False):
     (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
-    post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
-    print ("Accuracy Test: " + ("fwddiff_N256" if diff else "fwdprop_N256")+post)
+    fname = (["fwdprop", "fwddiff"][diff] + ["", "_ft"][fft] + "_N256" + 
+             {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode])
+    print ("Accuracy Test: " + fname)
     print ("--------------------------------------")
     for moo in range(20):
+        #(K, L, B) = (4, 1, 64*4)
         (K, L, B) = (4, np.random.randint(4, 21), np.random.randint(4, 41)); 
-        fname = (f"fwddiff_N{64*K}" if diff else f"fwdprop_N{64*K}")+post
-        N = np.random.randint(128, 256+1); Nwarp = np.random.randint(2, 21 if diff else 31); Nblk = int(np.ceil(B/Nwarp))
+        N = 64*K if fft else np.random.randint(128, 256+1); 
+        Nwarp = np.random.randint(2, 21 if diff else 31); Nblk = int(np.ceil(B/Nwarp))
         print (f"N={N}, L={L:2d}, B={B:2d}, Nwarp={Nwarp:2d}...", end="")
         # Inputs.
         (p, dp) = np.random.randn(2, L, N//2, n_p); s = np.random.randn(L, N//2, n_s)
@@ -36,17 +38,20 @@ def test_fwd_acc(diff=False, mode='mzi'):
         if (mode == 'orth'): u_in = np.real(u_in); du_in = np.real(du_in)
         ldp = p[0].size; lds = s[0].size; ldu = N
         shifts = np.random.randint([N-1]*L); lens = np.random.randint((N-shifts)//2)   # Random splitter placement.
+        strides = np.random.randint(np.repeat(np.log2(N), L)) #np.repeat(1, L)   # TODO -- Currently just fixed stride.
         # GPU code.
         func = mod.get_function(fname)
         shifts_d = cp.asarray(shifts, dtype=cp.int32); lens_d = cp.asarray(lens, dtype=cp.int32)
+        strides_d = cp.asarray(strides, dtype=cp.int32)
         (p_d, dp_d, s_d) = [cp.asarray(x, dtype=cp.float32) for x in (p, dp, s)]
         (N_d, L_d, B_d, ldp_d, lds_d, ldu_d) = map(cp.int32, (N, L, B, ldp, lds, ldu))
         in_d = cp.asarray(u_in, dtype=dtype); out_d = cp.asarray(in_d*0); 
         din_d = cp.asarray(du_in, dtype=dtype); dout_d = cp.asarray(din_d*0); mode_d = cp.int32(0)
+        inds_d = [strides_d] if fft else [lens_d, shifts_d]
         if diff:
-            args = [N_d, L_d, B_d, lens_d, shifts_d, p_d, dp_d, ldp_d, s_d, lds_d, in_d, din_d, out_d, dout_d, ldu_d, mode_d]
+            args = [N_d, L_d, B_d, *inds_d, p_d, dp_d, ldp_d, s_d, lds_d, in_d, din_d, out_d, dout_d, ldu_d, mode_d]
         else:
-            args = [N_d, L_d, B_d, lens_d, shifts_d, p_d, ldp_d, s_d, lds_d, in_d, out_d, ldu_d, mode_d]
+            args = [N_d, L_d, B_d, *inds_d, p_d, ldp_d, s_d, lds_d, in_d, out_d, ldu_d, mode_d]
         func((Nblk,), (32,Nwarp), tuple(args))
         u_out = out_d.get(); du_out = dout_d.get()
         # CPU code for comparison.
@@ -64,19 +69,23 @@ def test_fwd_acc(diff=False, mode='mzi'):
             elif mode == 'orth':
                 (theta,) = p.T; (C, S) = (np.cos(theta/2), np.sin(theta/2))
                 return np.array([[S, -C], [C, S]])
+        def M_cpu(p, s, ln, sh, st):
+            if fft:
+                mats = Tij_cpu(p, s).reshape([2, 2, N//2//(2**st), 2**st]).transpose(2, 0, 1, 3)
+                return block_diag(*[np.concatenate([np.concatenate([np.diag(T[j, k]) for k in [0,1]], 1) for j in [0,1]])
+                                    for T in mats])
+            else:
+                mats_i = Tij_cpu(p, s).transpose(2, 0, 1)
+                return block_diag(np.eye(sh), *mats_i[sh//2:sh//2+ln], np.eye(N-sh-2*ln))
         u   = u_in;          du  = du_in
         u_p = u + 1e-5*du;   u_m = u - 1e-5*du
         for i in range(L):
-            mats_i = Tij_cpu(p[i], s[i]).transpose(2, 0, 1)
-            M = block_diag(np.eye(shifts[i]), *mats_i[shifts[i]//2:shifts[i]//2+lens[i]], np.eye(N-shifts[i]-2*lens[i]))
+            M = M_cpu(p[i], s[i], lens[i], shifts[i], strides[i])
             u = u.dot(M.T)
             if diff:
-                mats_p = Tij_cpu(p[i] + 1e-5*dp[i], s[i]).transpose(2, 0, 1)
-                mats_m = Tij_cpu(p[i] - 1e-5*dp[i], s[i]).transpose(2, 0, 1)
-                Mp = block_diag(np.eye(shifts[i]), *mats_p[shifts[i]//2:shifts[i]//2+lens[i]], np.eye(N-shifts[i]-2*lens[i]))
-                Mm = block_diag(np.eye(shifts[i]), *mats_m[shifts[i]//2:shifts[i]//2+lens[i]], np.eye(N-shifts[i]-2*lens[i]))
-                u_p = u_p.dot(Mp.T); u_m = u_m.dot(Mm.T)
-        du = (u_p - u_m) / 2e-5
+                Mp = M_cpu(p[i] + 1e-5*dp[i], s[i], lens[i], shifts[i], strides[i]); u_p = u_p.dot(Mp.T)
+                Mm = M_cpu(p[i] - 1e-5*dp[i], s[i], lens[i], shifts[i], strides[i]); u_m = u_m.dot(Mm.T)
+                du = (u_p - u_m) / 2e-5
         # Error evaluation.
         err = np.linalg.norm(u_out-u, axis=1) / np.linalg.norm(u, axis=1)
         d_err = np.linalg.norm(du_out-du, axis=1) / (np.linalg.norm(du, axis=1)+1e-15) * diff
@@ -89,7 +98,7 @@ def test_fwd_acc(diff=False, mode='mzi'):
             print("[p] err/ind   = ", '[' + "".join(np.array(['*', '.'])[(errT < 1e-4).astype(int)]) + ']')
             print("[dp] err/batch = ", '[' + "".join(np.array(['*', '.'])[(d_err < 1e-4).astype(int)]) + ']')
             print("[dp] err/ind   = ", '[' + "".join(np.array(['*', '.'])[(d_errT < 1e-4).astype(int)]) + ']')
-    print()    
+    print()
 def test_rev_acc(mode):
     (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
     post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
