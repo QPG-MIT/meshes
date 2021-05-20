@@ -1,5 +1,5 @@
 # meshes/gpu
-# Ryan Hamerly, 5/19/21
+# Ryan Hamerly, 5/20/21
 #
 # CUDA implementation of light propagation through a beamsplitter mesh.  The NumPy CPU versions are convenient
 # for small meshes (N < 64) but do not scale well when the mesh size exceeds the CPU cache..  This code is 
@@ -11,7 +11,7 @@
 #   04/03/21: Added testing utility test.py.
 #   04/13/21: Added MeshNetworkGPU class (mesh.py) to interface with GPU code.
 #   04/14/21: Added optimization module opt.py.
-#   05/19/21: Added FFT mesh.
+#   05/20/21: Added FFT mesh.
 
 
 import numpy as np

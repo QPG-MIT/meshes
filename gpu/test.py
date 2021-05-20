@@ -1,5 +1,5 @@
 # meshes/gpu/test.py
-# Ryan Hamerly, 5/19/21
+# Ryan Hamerly, 5/20/21
 #
 # Testing utility for this package.  Tests both speed and accuracy.
 #
@@ -8,7 +8,7 @@
 #   04/05/21: Added support for forward differentiation.
 #   04/06/21: Reverse differentiation and CPU timing comparison.
 #   04/10/21: Added symmetric and orthogonal representations.
-#   05/19/21: Added FFT mesh.
+#   05/20/21: Added FFT mesh.
 
 import numpy as np
 import cupy as cp
@@ -160,22 +160,25 @@ def test_rev_acc(mode, fft=False):
 # Step 2: Speed Test.
 # Performance is a function of mesh size N, depth L, batch size B, and warps/block.  The latter
 # is a tuning parameter that must be swept.
-def test_fwd_speed(diff, mode='mzi', length=False):
+def test_fwd_speed(diff, mode='mzi', fft=False, length=False):
     (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
-    Nlist = [64, 128, 192, 256, 320, 384, 512, 640]
+    Nlist = [64, 128, 256, 512] if fft else [64, 128, 192, 256, 320, 384, 512, 640]
     post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode];
-    f = open("benchmarks/"+("fwddiff" if diff else "fwdprop")+post+("_len" if length else "")+".txt", 'w')
-    print ("Speed Test: " + ("fwddiff_N***" if diff else "fwdprop_N***")+post)
+    root = ["fwdprop", "fwddiff"][diff] + ["", "_ft"][fft]
+    f = open("benchmarks/"+root+post+(["", "_len"][length])+".txt", 'w')
+    print ("Speed Test: " + root+"_N***"+post)
     print ("--------------------------------------")
     def timetest(N, L, B, Nwarp):
-        K = N//32
+        K = N//32; L -= fft
         Nblk = int(np.ceil(B/Nwarp))
-        func = mod.get_function((f"fwddiff_N{N}" if diff else f"fwdprop_N{N}")+post)
+        func = mod.get_function(root+f"_N{N}"+post)
         p_d = cp.random.randn(L, 32*K, n_p, dtype=np.float32);
         s_d = cp.random.randn(L, 32*K, n_s, dtype=np.float32)
         if (mode == 'orth'): in_d = cp.random.randn(B, 32*2*K, dtype=np.float32)
         else: in_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
         shifts_d = cp.arange(L, dtype=cp.int32) % 2; lens_d = (32*K) - shifts_d;
+        cols = np.outer(np.arange(L), 1) % N; bits = np.outer(1, np.arange(1, 16))
+        strides_d = cp.asarray(((cols+1)>>bits<<bits == cols+1).sum(1), dtype=cp.int32)
         out_d = cp.zeros([B, 32*2*K], dtype=np.complex64)
         if diff:
             dp_d = cp.random.randn(L, 32*K, 2, dtype=np.float32); 
@@ -188,8 +191,8 @@ def test_fwd_speed(diff, mode='mzi', length=False):
             (dp_d, dout_d, din_d) = (None, None, None)
         ldp = (32*K)*n_p; lds = (32*K)*n_s; ldu = 2*(32*K)
         (N_d, L_d, B_d, ldp_d, lds_d, ldu_d) = map(cp.int32, (N, L, B, ldp, lds, ldu))
-        t = 0; ct = 1
-        args = ([N_d, L_d, B_d, lens_d, shifts_d, p_d] + [dp_d][:diff] + [ldp_d] + [s_d, lds_d] + 
+        t = 0; ct = 1; inds_d = [strides_d] if fft else [lens_d, shifts_d]
+        args = ([N_d, L_d, B_d, *inds_d, p_d] + [dp_d][:diff] + [ldp_d, s_d, lds_d] + 
                 ([in_d, din_d, out_d, dout_d, ldu_d] if diff else [in_d, out_d, ldu_d]) + [cp.int32(0)])
         while (t < 1e-2):
             cp.cuda.runtime.deviceSynchronize(); t = time()
@@ -266,16 +269,17 @@ def test_fwd_speed(diff, mode='mzi', length=False):
     
 
 
-def test_rev_speed(mode):
+def test_rev_speed(mode, fft):
     (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
     post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
-    f = open("benchmarks/backdiff"+post+".txt", 'w')
+    root = "backdiff" + ["", "_ft"][fft]
+    f = open("benchmarks/"+root+post+".txt", 'w')
     print ("Speed Test: backdiff_N***"+post)
     print ("--------------------------------------")
     def timetest(N, L, B, Nwarp):
-        K = N//32
+        K = N//32; L -= fft
         Nblk = int(np.ceil(B/Nwarp))
-        func = mod.get_function(f"backdiff_N{N}"+post)
+        func = mod.get_function(root+f"_N{N}"+post)
         p_d = cp.random.randn(L, 32*K, n_p, dtype=np.float32); s_d = cp.random.randn(L, 32*K, n_s, dtype=np.float32)
         if (mode == 'orth'):
             u_out_d = cp.random.randn(B, 32*2*K, dtype=np.float32)
@@ -284,16 +288,17 @@ def test_rev_speed(mode):
             u_out_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
             dJdu_out_d = cp.random.randn(B, 32*2*K, 2, dtype=np.float32).dot(cp.asarray([1.0, 1.0j], dtype=np.complex64))
         shifts_d = cp.arange(L, dtype=cp.int32) % 2; lens_d = (32*K) - shifts_d;
+        cols = np.outer(np.arange(L), 1) % N; bits = np.outer(1, np.arange(1, 16))
+        strides_d = cp.asarray(((cols+1)>>bits<<bits == cols+1).sum(1), dtype=cp.int32)
         u_in_d = cp.zeros([B, 32*2*K], dtype=dtype)
         dJdu_in_d = cp.zeros([B, 32*2*K], dtype=dtype)
         dp_d = cp.random.randn(L, 32*K, n_p, dtype=np.float32)
         args_post = {'mzi': (), 'sym': (cp.bool(False),), 'orth': ()}[mode]
 
         ldp = (32*K)*n_p; lds = (32*K)*n_s; ldu = 2*(32*K)
-        t = 0; ct = 1
-        args = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, dp_d, cp.int32(ldp)] +
-                [s_d, cp.int32(lds)] + [u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu)] + 
-                [cp.int32(0)])
+        t = 0; ct = 1; inds_d = [strides_d] if fft else [lens_d, shifts_d]
+        args = ([cp.int32(N), cp.int32(L), cp.int32(B), *inds_d, p_d, dp_d, cp.int32(ldp)] +
+                [s_d, cp.int32(lds), u_out_d, dJdu_out_d, u_in_d, dJdu_in_d, cp.int32(ldu), cp.int32(0)])
         while (t < 1e-2):
             cp.cuda.runtime.deviceSynchronize(); t = time()
             for i in range(ct):
@@ -307,7 +312,7 @@ def test_rev_speed(mode):
     f.write("N\tL\tB\twarps\tGC/s\tGFLOP/s\tt_mv\tt_mm\n")
 
     print ("Square Matrices: N x N x N")
-    Nlist = [64, 128, 192, 256, 320, 384, 512, 640]
+    Nlist = [64, 128, 256, 512] if fft else [64, 128, 192, 256, 320, 384, 512, 640]
     for (i, N) in enumerate(Nlist):
         print(f"N = {N:4d}: ", end="")
         for (j, ws) in enumerate(range(1, 33)):
@@ -506,16 +511,16 @@ if (inf or fd or bd):
 for mode in modes:
     if inf:
         if acc:   test_fwd_acc(False, mode, fft)
-        if speed: test_fwd_speed(False, mode)       # TODO -- implement with FFT mesh
-        if lens:  test_fwd_speed(False, mode, True)  
+        if speed: test_fwd_speed(False, mode, fft)       # TODO -- implement with FFT mesh
+        if lens:  test_fwd_speed(False, mode, fft, True)  
     if fd:
         if acc:   test_fwd_acc(True, mode, fft)
-        if speed: test_fwd_speed(True, mode)        # TODO -- implement with FFT mesh
-        if lens:  test_fwd_speed(True, mode, True)  
+        if speed: test_fwd_speed(True, mode, fft)        # TODO -- implement with FFT mesh
+        if lens:  test_fwd_speed(True, mode, fft, True)  
     if bd:
         if acc:   test_rev_acc(mode, fft)
-        if speed: test_rev_speed(mode)              # TODO -- implement with FFT mesh
-        if lens:  test_rev_speed(mode, True)
+        if speed: test_rev_speed(mode, fft)              # TODO -- implement with FFT mesh
+        if lens:  test_rev_speed(mode, fft, True)
     if cpu:
         assert mode == 'mzi'
         if acc:   raise NotImplementedError()
