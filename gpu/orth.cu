@@ -10,6 +10,7 @@
 //   04/10/21: Created this file.
 
 #define CROSSING_TYPE  ORTH
+#define FFT            0
 
 // Inference / forward propagation of fields, no derivative terms.  
 // (K=1-3 optimized for 24k smem, others for 48k smem)
@@ -198,3 +199,4 @@
 //*/
 
 #undef CROSSING_TYPE
+#undef FFT

@@ -1,5 +1,5 @@
 # meshes/gpu/test.py
-# Ryan Hamerly, 4/5/21
+# Ryan Hamerly, 5/19/21
 #
 # Testing utility for this package.  Tests both speed and accuracy.
 #
@@ -8,6 +8,7 @@
 #   04/05/21: Added support for forward differentiation.
 #   04/06/21: Reverse differentiation and CPU timing comparison.
 #   04/10/21: Added symmetric and orthogonal representations.
+#   05/19/21: Added FFT mesh.
 
 import numpy as np
 import cupy as cp
@@ -99,36 +100,37 @@ def test_fwd_acc(diff=False, mode='mzi', fft=False):
             print("[dp] err/batch = ", '[' + "".join(np.array(['*', '.'])[(d_err < 1e-4).astype(int)]) + ']')
             print("[dp] err/ind   = ", '[' + "".join(np.array(['*', '.'])[(d_errT < 1e-4).astype(int)]) + ']')
     print()
-def test_rev_acc(mode):
+def test_rev_acc(mode, fft=False):
     (n_p, n_s, dtype) = dict(mzi=(2, 2, cp.complex64), sym=(2, 1, cp.complex64), orth=(1, 0, cp.float32))[mode]
     post = {'mzi': '_mzi', 'sym': '_sym', 'orth': '_orth'}[mode]
     print ("Accuracy Test: backdiff_N256"+post)
     print ("--------------------------------------")
-    fwd = mod.get_function("fwdprop_N256"+post)
-    rev = mod.get_function("backdiff_N256"+post)
+    fwd = mod.get_function("fwdprop" + ["", "_ft"][fft] + "_N256"+post)
+    rev = mod.get_function("backdiff" + ["", "_ft"][fft] + "_N256"+post)
     for moo in range(20):
         (K, L, B) = (4, np.random.randint(4, 21), np.random.randint(4, 41)); 
-        N = np.random.randint(128, 256+1); Nwarp = np.random.randint(2, 29); Nblk = int(np.ceil(B/Nwarp))
+        N = 256 if fft else np.random.randint(128, 256+1); 
+        Nwarp = np.random.randint(2, 29); Nblk = int(np.ceil(B/Nwarp))
         print (f"N={N}, L={L:2d}, B={B:2d}, Nwarp={Nwarp:2d}...", end="")
         shifts = np.random.randint([N-1]*L); lens = np.random.randint((N-shifts)//2)   # Random splitter placement.
+        strides = np.random.randint(np.repeat(np.log2(N), L))
         p = np.random.randn(L, N//2, n_p).astype(np.float32); 
         s = np.random.randn(L, N//2, n_s).astype(np.float32)
         (u_in, u0) = np.random.randn(2, B, N, 2).dot([1, 1j]).astype(np.complex64)
         if (mode == 'orth'): u_in = np.real(u_in); u0 = np.real(u0)
         ldp = p[0].size; lds = s[0].size; ldu = N
         # Send data to the GPU.
-        (p_d, s_d, u_in_d, u0_d, lens_d, shifts_d) = map(cp.asarray, (p, s, u_in, u0, lens, shifts))
+        (p_d, s_d, u_in_d, u0_d, lens_d, shifts_d, strides_d) = map(cp.asarray, (p, s, u_in, u0, lens, shifts, strides))
         u_out_d = cp.zeros(u_in_d.shape, dtype=dtype); u_in2_d = cp.zeros(u_in_d.shape, dtype=dtype)
         dJdu_in_d = cp.zeros(u_in_d.shape, dtype=dtype); dp_d = cp.zeros(p_d.shape, dtype=cp.float32)
-        args_fwd = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, cp.int32(ldp)] + 
-                    [s_d, cp.int32(lds)] + [u_in_d, u_out_d, cp.int32(ldu)] + 
-                    [cp.int32(0)])
+        inds_d = [strides_d] if fft else [lens_d, shifts_d]
+        args_fwd = ([cp.int32(N), cp.int32(L), cp.int32(B), *inds_d, p_d, cp.int32(ldp), s_d, cp.int32(lds), 
+                     u_in_d, u_out_d, cp.int32(ldu), cp.int32(0)])
         # Fwd-propagate, get gradient, then back-propagate.
         fwd((Nblk,), (32, Nwarp), tuple(args_fwd))
         dJdu_out_d = 2*(u_out_d - u0_d)
-        args_rev = ([cp.int32(N), cp.int32(L), cp.int32(B), lens_d, shifts_d, p_d, dp_d, cp.int32(ldp)] + 
-                    [s_d, cp.int32(lds)] + [u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, cp.int32(ldu)] + 
-                    [cp.int32(0)])
+        args_rev = ([cp.int32(N), cp.int32(L), cp.int32(B), *inds_d, p_d, dp_d, cp.int32(ldp), s_d, cp.int32(lds), 
+                     u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, cp.int32(ldu), cp.int32(0)])
         rev((Nblk,), (32, Nwarp), tuple(args_rev))
         (u_out, dJdu_out, u_in2, dJdu_in2, dp) = map(cp.asnumpy, (u_out_d, dJdu_out_d, u_in2_d, dJdu_in_d, dp_d))
 
@@ -138,9 +140,9 @@ def test_rev_acc(mode):
         def numdiff(dp):
             pp = (p + 1e-3*dp).astype(np.float32); pm = (p - 1e-3*dp).astype(np.float32)
             (pp_d, pm_d, s_d, u_in_d, u0_d, lens_d, shifts_d) = map(cp.asarray, (pp, pm, s, u_in, u0, lens, shifts))
-            args_fwd[5] = pp_d;
+            args_fwd[5-fft] = pp_d;
             fwd((Nblk,), (32, Nwarp), tuple(args_fwd))
-            Jp = (cp.abs(u_out_d - u0_d)**2).sum().get(); args_fwd[5] = pm_d;
+            Jp = (cp.abs(u_out_d - u0_d)**2).sum().get(); args_fwd[5-fft] = pm_d;
             fwd((Nblk,), (32, Nwarp), tuple(args_fwd))
             Jm = (cp.abs(u_out_d - u0_d)**2).sum().get()
             return (Jp - Jm) / 2e-3
@@ -153,6 +155,7 @@ def test_rev_acc(mode):
         else: 
             print (f"FAIL!  err[dJ/du_in]={err_uin:.2e}, err[dJ/dp]={err_dp:.2e}")
     print()
+
 
 # Step 2: Speed Test.
 # Performance is a function of mesh size N, depth L, batch size B, and warps/block.  The latter
@@ -464,6 +467,7 @@ def test_blas():
         
         
 # Command line options.
+fft   = ('-fft'  in sys.argv)
 acc   = ('-a'    in sys.argv)
 speed = ('-s'    in sys.argv)
 lens  = ('-l'    in sys.argv)
@@ -477,7 +481,7 @@ orth  = ('-orth' in sys.argv)
 blas  = ('blas'  in sys.argv)
         
 if (not (acc or speed or lens) or not (inf or fd or bd or cpu or blas) or not (blas or mzi or sym or orth)):
-    print ("Usage: python test.py [-a] [-s] [-mzi] [-sym] [-orth] [inf] [fwd] [rev] [cpu] [blas]")
+    print ("Usage: python test.py [-a] [-s] [-mzi] [-sym] [-orth] [-fft] [inf] [fd] [bd] [cpu] [blas]")
     print ("-a    Test accuracy.")
     print ("-s    Test speed.")
     print ("-l    Test speed for range of mesh lengths.")
@@ -487,6 +491,7 @@ if (not (acc or speed or lens) or not (inf or fd or bd or cpu or blas) or not (b
     print ("-mzi  Standard MZI")
     print ("-sym  Symmetric crossing")
     print ("-orth Orthogonal (real) crossing")
+    print ("-fft  FFT mesh topology")
     print ("cpu   Test CPU function (-s only)")
     print ("blas  Test performance of BLAS GEMM (-s only)")
     exit()
@@ -500,16 +505,16 @@ if (inf or fd or bd):
 # Benchmark GPU / CPU
 for mode in modes:
     if inf:
-        if acc:   test_fwd_acc(False, mode)
-        if speed: test_fwd_speed(False, mode)  
+        if acc:   test_fwd_acc(False, mode, fft)
+        if speed: test_fwd_speed(False, mode)       # TODO -- implement with FFT mesh
         if lens:  test_fwd_speed(False, mode, True)  
     if fd:
-        if acc:   test_fwd_acc(True, mode)
-        if speed: test_fwd_speed(True, mode)  
+        if acc:   test_fwd_acc(True, mode, fft)
+        if speed: test_fwd_speed(True, mode)        # TODO -- implement with FFT mesh
         if lens:  test_fwd_speed(True, mode, True)  
     if bd:
-        if acc:   test_rev_acc(mode)
-        if speed: test_rev_speed(mode)
+        if acc:   test_rev_acc(mode, fft)
+        if speed: test_rev_speed(mode)              # TODO -- implement with FFT mesh
         if lens:  test_rev_speed(mode, True)
     if cpu:
         assert mode == 'mzi'

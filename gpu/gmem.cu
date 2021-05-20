@@ -1,5 +1,5 @@
 // meshes/gpu/gmem.cu
-// Ryan Hamerly, 4/5/21
+// Ryan Hamerly, 5/19/21
 //
 // Macros for interfacing with global memory:
 //   load_u, load_u_du:   read from u_in [gmem] -> T [smem] -> u [regs]
@@ -12,6 +12,7 @@
 //   04/05/21: Generalized code with macros, split off to gmem.cu.
 //   04/06/21: Added macros for back-propagation.
 //   04/10/21: Added symmetric and orthogonal representations.
+//   05/19/21: Improved macros to facilitate generalization.
 
 
 // Load u coalesced, gmem -> smem.  Then reorder strided, smem -> regs.  (Direct gmem -> regs would be strided, poor BW).
@@ -225,8 +226,8 @@ for i in range(0, K*L, B):
 */
 
 #define i1_T (l/1)
-#define i2_T (stride_T*(dm%K + K*(l%1)))
-#define i2_dth (stride_dth*(dm%K + K*(l%1)))
+#define i2_T (s_T*(dm%K + K*(l%1)))
+#define i2_dth (s_dth*(dm%K + K*(l%1)))
 #define i3_T (dm/K)
 
 #define IDX_PS(stride_p, stride_s)   int idx_p = ldp*l + stride_p*dm, idx_s = s ? (lds*l + stride_s*dm) : 0
@@ -312,6 +313,6 @@ __syncthreads(); \
 #define save_dp_mzi    matrix_io(IDX_PS(2, 2), cond_gen, svdp_m, )
 #define save_dp_sym    matrix_io(IDX_PS(2, 1), cond_gen, svdp_s, )
 #define save_dp_orth   matrix_io(IDX_P(1),     cond_gen, svdp_o, )
-#define saveft_dp_mzi  matrix_io(IDX_PS(2, 2), cond_fft
+#define saveft_dp_mzi  matrix_io(IDX_PS(2, 2), cond_fft, svdp_m, )
 #define saveft_dp_sym  matrix_io(IDX_PS(2, 1), cond_fft, svdp_s, )
 #define saveft_dp_orth matrix_io(IDX_P(1),     cond_fft, svdp_o, )
