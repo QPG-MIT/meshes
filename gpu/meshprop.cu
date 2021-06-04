@@ -1,5 +1,5 @@
 // meshes/gpu/meshprop.cu
-// Ryan Hamerly, 4/10/21
+// Ryan Hamerly, 5/19/21
 //
 // nvcc meshprop.cu -I/usr/local/lib/python3.5/dist-packages/cupy/core/include -arch=sm_35 -Xptxas -v --cubin
 //
