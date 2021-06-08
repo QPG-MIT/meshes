@@ -69,7 +69,7 @@ def Tsolve_11(T, p_splitter):
 
 
 def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork, None],
-         phi_diag: np.ndarray, U: np.ndarray, nm: int, nn: Callable, ijxyp: Callable):
+         phi_diag: np.ndarray, U: np.ndarray, nm: int, nn: Callable, ijxyp: Callable, improved: bool):
     r"""
     Calibrates a beamsplitter mesh using the diagonalization method, detailed in my note.
     Accelerated by Numba JIT.
@@ -81,6 +81,7 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     :param nn: Number of n's (function of m)
     :param ijxyp: Returns [i, j, x, y, p], function of (m, n).  (i, j): Matrix element zeroed.  (x, y): MZI position.
     p: which mesh (0 for m1, 1 for m2).
+    :param improved: Whether to use the improved method (better updates to V, W when nulling is imperfect)
     :return:
     """
     assert (m1 is not None) or (m2 is not None)
@@ -105,13 +106,13 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     #print (np.array([i, j, x, y, ind, r]).T)
     #print (U.shape); print (VdV.shape); print (WWd.shape)
     ijzp = np.array([i, j, ind, r]).T; rand = np.random.randint(0, 2, len(ijzp))*2 - 1
-    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand)
+    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand, improved)
     phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
 
 # Super-fast Numba JIT-accelerated self-configuration code that implements the matrix diagonalization method.
 # Runs 10-20x faster than pure Python version.
 @njit
-def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand):
+def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand, improved):
     #X = np.array(U)
     for k in range(len(ijzp)):
         (i, j, ind, p) = ijzp[k]  # (i, j): element to zero.  ind: MZI index.  p: 0 (left mesh) or 1 (right mesh)
@@ -127,9 +128,14 @@ def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand):
             res = wj.dot(vi) - wj[j1:j1+2].dot(vi[j1:j1+2])
             c1[ind] = Tsolve_abc(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, rand[k])
             T = T_mzi(c1[ind], p1[ind])
-            U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T.T.conj())
-            #WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T.T.conj())  # (these cancel out)
-            #WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
+            if improved:
+                U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T.T.conj())
+                #WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T.T.conj())  # (these cancel out)
+                #WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
+            else:
+                U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T0dag)
+                WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T0dag)
+                WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
             #X[:, j1:j1+2] = X[:, j1:j1+2].dot(T.conj().T)
         else:
             i1 = (i if upper else i-1); (u, v) = U[i1:i1+2, j]
@@ -142,9 +148,14 @@ def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand):
             res = wj.dot(vi) - wj[i1:i1+2].dot(vi[i1:i1+2])
             c2[ind] = Tsolve_abc_out(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, rand[k])
             T = T_mzi_o(c2[ind], p2[ind])
-            U[i1:i1+2, :]   = T.T.conj().dot(U[i1:i1+2, :])
-            #VdV[i1:i1+2, :] = T.T.conj().dot(VdV[i1:i1+2, :])  # (these cancel out)
-            #VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
+            if improved:
+                U[i1:i1+2, :]   = T.T.conj().dot(U[i1:i1+2, :])
+                #VdV[i1:i1+2, :] = T.T.conj().dot(VdV[i1:i1+2, :])  # (these cancel out)
+                #VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
+            else:
+                U[i1:i1+2, :]   = T0dag.dot(U[i1:i1+2, :])
+                VdV[i1:i1+2, :] = T0dag.dot(VdV[i1:i1+2, :])
+                VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
             #X[i1:i1+2, :] = T.conj().T.dot(X[i1:i1+2, :])
         #print ((i, j), ':', ind, p)#, ' *'[err_i])
         #print ((np.abs(X) > 1e-6).astype(int))

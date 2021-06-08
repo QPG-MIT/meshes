@@ -57,11 +57,11 @@ class ReckNetwork(StructuredMeshNetwork):
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
                                               p_crossing=p_crossing, phi_out=phi_out, X=X)
             if phi_pos == 'in': self.flip_crossings(inplace=True)
-        elif (method == 'diag'):
+        elif (method in ['diag', 'diag*']):
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
                   p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N),
                   X=X.flip() if (phi_pos == 'in') else X, phi_pos=phi_pos)
-            diagReck(self, M)
+            diagReck(self, M, method=='diag*')
         elif (method == 'direct'):
             assert (phi_pos == 'in')
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
@@ -141,19 +141,20 @@ def reorder_reck(N: int, data: np.ndarray, reverse=False) -> np.ndarray:
             ind_in += 1
     return out
 
-def diagReck(m: ReckNetwork, U: np.ndarray):
+def diagReck(m: ReckNetwork, U: np.ndarray, improved: bool):
     r"""
     Self-configures a Reck mesh according to the diagonalization method.
     :param m: Instance of ReckNetwork.
     :param U: Target matrix.
+    :param improved: Whether to use the improved method.
     :return:
     """
     N = m.N; out = (m.phi_pos == 'out')
     def nn_rk(m): return N-1-m
     if out:
         def ijxyp_rk(m, n): return [m, N-1-n, m*2+n, N-2-n, m*0 + 1 - out]
-        diag(m, None, m.phi_out, U, N-1, nn_rk, ijxyp_rk)
+        diag(m, None, m.phi_out, U, N-1, nn_rk, ijxyp_rk, improved)
     else:
         def ijxyp_rk(m, n): return [N-1-n, m, -m*2-n, N-2-n, m*0 + 1 - out]
-        diag(None, m, m.phi_out, U, N-1, nn_rk, ijxyp_rk)
+        diag(None, m, m.phi_out, U, N-1, nn_rk, ijxyp_rk, improved)
 

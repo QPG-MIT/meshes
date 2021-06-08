@@ -227,14 +227,14 @@ class SymClementsNetwork(MeshNetwork):
         :param warn: Throws a warning if mesh cannot be calibrated correctly.
         """
         assert (M is None) ^ (clem is None)
-        assert (method in ['direct', 'ratio', 'mod', 'diag'])
+        assert (method in ['direct', 'ratio', 'mod', 'diag', 'diag*'])
         N = len(M) if (clem is None) else clem.N
 
         if (clem is not None):
             # Just split the existing Clements matrix into its triangles.
             (m1, m2) = clem.split(); (M1, M2) = (m1.matrix(), m2.matrix())
             m2.flip_crossings(inplace=True)
-        elif (method != 'diag'):
+        elif not (method in ['diag', 'diag*']):
             # Get the Clements decomposition of M and break it up into upper & lower triangles M = M2*M1.
             clem = ClementsNetwork(M=M, X=X)
             (m1, m2) = clem.split(); (M1, M2) = (m1.matrix(), m2.matrix())
@@ -247,7 +247,7 @@ class SymClementsNetwork(MeshNetwork):
 
         (m1.p_splitter, m2.p_splitter) = np.split(s, [m1.n_cr])
 
-        if (method != 'diag'):
+        if not (method in ['diag', 'diag*']):
             m1.flip(True);
             calibrateTriangle(m2, M2, 'down', method, warn=warn)               #  <-- Hard work done here.
             calibrateTriangle(m1, M1[::-1,::-1].T, 'down', method, warn=warn)  #  <-- Hard work done here.
@@ -262,8 +262,8 @@ class SymClementsNetwork(MeshNetwork):
         self.m2 = m2
         self.X = X
 
-        if (method == 'diag'):
-            diagClements(self, M)       #  <-- Hard work done here.
+        if (method in ['diag', 'diag*']):
+            diagClements(self, M, method=='diag*')       #  <-- Hard work done here.
 
     def clements(self, phi_pos='out') -> ClementsNetwork:
         r"""
@@ -314,11 +314,12 @@ class SymClementsNetwork(MeshNetwork):
 
     # TODO -- implement grad_phi
 
-def diagClements(m, U: np.ndarray):
+def diagClements(m: SymClementsNetwork, U: np.ndarray, improved: bool):
     r"""
     Self-configures a Clements mesh according to the diagonalization method.
     :param m: Instance of SymClementsNetwork.
     :param U: Target matrix.
+    :param improved: Whether to use the improved method.
     :return:
     """
     N = m.N
@@ -326,5 +327,5 @@ def diagClements(m, U: np.ndarray):
         return m+1
     def ijxyp_cl(m, n):
         return [N-1-m+n, n, -n, N-2-m+n, m*0+1] if (m[0]%2) else [N-1-n, m-n, n, m-n, m*0]
-    diag(m.m1, m.m2, m.phi_diag, U, N-1, nn_cl, ijxyp_cl)
+    diag(m.m1, m.m2, m.phi_diag, U, N-1, nn_cl, ijxyp_cl, improved)
 
