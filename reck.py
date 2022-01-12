@@ -49,7 +49,8 @@ class ReckNetwork(StructuredMeshNetwork):
         if (method is None or M is None):
             if (M is None):
                 # Initialize from parameters.  Check parameters first.
-                p_crossing = p_crossing * np.ones([N*(N-1)//2, X.n_phase]); phi_out = phi_out * np.ones(N)
+                p_crossing = p_crossing * np.ones([N*(N-1)//2, X.n_phase]);
+                phi_out = None if (phi_out is None) else (phi_out * np.ones(N))
             else:
                 # Initialize from a matrix.  Calls reckdec() after correctly ordering the crossings.
                 if p_splitter.ndim: p_splitter = reorder_reck(N, p_splitter, True)

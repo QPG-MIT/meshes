@@ -38,7 +38,7 @@ class ClementsNetwork(StructuredMeshNetwork):
         :param p_splitter: Beamsplitter imperfection parameters.  Scalar or size (N(N-1)/2, X.n_splitter).
         :param M: A unitary matrix.  If specified, runs clemdec() to find the mesh realizing this unitary.
         """
-        if (M is 'haar'):
+        if (type(M)==str) and (str(M)=='haar'):  # What moron added syntax warnings to Python for using 'is' with literals??
             assert not np.any(list(map(np.iterable, [p_crossing, phi_out, p_splitter])))
             assert type(X) in [MZICrossing, SymCrossing]
             x = (np.outer(1, np.array([0]*(N//2) + [1]*(N//2-1))) + np.outer(np.arange(0, N, 2), 1)).flatten()
@@ -58,7 +58,8 @@ class ClementsNetwork(StructuredMeshNetwork):
         p_splitter = np.array(p_splitter); assert p_splitter.shape in [(), (N*(N-1)//2, X.n_splitter)]
         if (M is None):
             # Initialize from parameters.  Check parameters first.
-            p_crossing = p_crossing * np.ones([N*(N-1)//2, X.n_phase]); phi_out = phi_out * np.ones(N)
+            p_crossing = p_crossing * np.ones([N*(N-1)//2, X.n_phase]); 
+            phi_out = None if (phi_out is None) else (phi_out * np.ones(N))
         elif (type(M) != str):
             # Initialize from a matrix.  Calls clemdec() after correctly ordering the crossings.
             assert phi_pos == 'out'
