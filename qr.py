@@ -45,7 +45,9 @@ class QRNetwork(MeshNetwork):
         :param phi_pos: Position of phase shifts: 'in' or 'out'.
         """
         assert (N is not None) ^ (M is not None)
-        if (M is not None): N = len(M); assert (M.shape == (N, N))
+        if (M is not None): 
+            if (M.dtype != np.complex): M = M.astype(np.complex)
+            N = len(M); assert (M.shape == (N, N))
         out = (phi_pos == 'out')
         p_splitter = np.zeros((N**2, X.n_splitter)) + np.array(p_splitter)
         p_crossing = np.zeros((N**2, X.n_phase   )) + np.array(p_crossing)

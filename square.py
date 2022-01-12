@@ -50,6 +50,7 @@ class SquareNetwork(MeshNetwork):
         :param phi_pos: Position of phase shifts: 'in' or 'out'.
         """
         assert (N is not None) + (M is not None) + (shape is not None) == 1
+        if (M is not None) and (M.dtype != np.complex): M = M.astype(np.complex)        
         if (shape is None): shape = (N, N) if (N is not None) else M.shape
         out = (phi_pos == 'out')
         p_splitter = np.zeros((np.prod(shape), X.n_splitter)) + np.array(p_splitter)

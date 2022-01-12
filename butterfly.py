@@ -38,6 +38,7 @@ class ButterflyNetwork(StructuredMeshNetwork):
         assert (phi_pos == 'out')   # TODO -- phi_pos='in'
         N = (N if N else len(M))
         assert N == 2**int(np.log2(N))  # Size must be a power of 2.
+        if (M is not None) and (M.dtype != np.complex): M = M.astype(np.complex)
 
         # Set up the mesh parameters and permutations for crossings with stride s > 1.
         lens = [N//2]*(N-1); shifts = [0]*(N-1); perm = [None]*N

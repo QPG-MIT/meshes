@@ -38,7 +38,9 @@ class ReckNetwork(StructuredMeshNetwork):
         :param phi_pos: Position of phase shifts: 'in' or 'out'.
         """
         assert (M is None) ^ (N is None)
-        if (M is not None): N = len(M)  # Start by getting N, shifts, lens, p_splitter
+        if (M is not None): 
+            if (M.dtype != np.complex): M = M.astype(np.complex)
+            N = len(M)  # Start by getting N, shifts, lens, p_splitter
         elif (np.iterable(phi_out)): N = len(phi_out)
         else: assert N != None
         shifts = list(range(N-2, 0, -1)) + list(range(0, N-1, 1))
