@@ -38,7 +38,7 @@ class ClementsNetwork(StructuredMeshNetwork):
         :param p_splitter: Beamsplitter imperfection parameters.  Scalar or size (N(N-1)/2, X.n_splitter).
         :param M: A unitary matrix.  If specified, runs clemdec() to find the mesh realizing this unitary.
         """
-        if (M == 'haar'):
+        if (M is 'haar'):
             assert not np.any(list(map(np.iterable, [p_crossing, phi_out, p_splitter])))
             assert type(X) in [MZICrossing, SymCrossing]
             x = (np.outer(1, np.array([0]*(N//2) + [1]*(N//2-1))) + np.outer(np.arange(0, N, 2), 1)).flatten()
