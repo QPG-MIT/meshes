@@ -69,8 +69,8 @@ class SquareNetwork(MeshNetwork):
         self.X = self.full.X
 
         if (M is not None):
-            if (method == 'diag'):
-                diagSquare(self, M, eig)
+            if (method in ['diag', 'diag*']):
+                diagSquare(self, M, eig, method=='diag*')
             elif (method == 'direct'):
                 directSquare(self, M, eig)
             else:
@@ -115,12 +115,13 @@ class SquareNetwork(MeshNetwork):
         w = self.full.dot(v, p_phase=self._fullphase(p_phase), p_splitter=p_splitter)
         return np.array(w[:self.M])
 
-def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9):
+def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9, improved=True):
     r"""
     Self-configures a SquareNet mesh according to the diagonalization method.
     :param m: Instance of SquareNetwork.
     :param M: Target matrix.
-    :param eig: maximum eigenvector of M*M, after rescaling (set t = None to prevent rescaling)
+    :param eig: Maximum eigenvector of M*M, after rescaling (set t = None to prevent rescaling)
+    :param improved: Whether to use improved diagonalization method (better results for imperfect error correction).
     :return:
     """
     M11 = M; (M, N) = M11.shape; assert (m.shape == M11.shape); out = (m.phi_pos == 'out')
@@ -133,7 +134,7 @@ def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9):
         # Call the subroutine that self-configures meshes by matrix diagonalization.
         def nn_sq(m): return N
         def ijxyp_sq(m, n): return [m, N+m-n, m+n, N-1+m-n, m*0]
-        diag(m.full, None, m.full.phi_out, U, M, nn_sq, ijxyp_sq)
+        diag(m.full, None, m.full.phi_out, U, M, nn_sq, ijxyp_sq, improved)
     else:
         # Set up U = [[M], [M']], where M*M + (M'*)(M') = 1
         MtM = M11.T.conj().dot(M11); fact = np.sqrt(eig / eigvalsh(MtM, subset_by_index=[N-1, N-1])[0]) if eig else 1.0
@@ -142,7 +143,7 @@ def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9):
         # Call the subroutine that self-configures meshes by matrix diagonalization.
         def nn_sq(m): return M
         def ijxyp_sq(m, n): return [M+m-n, m, -m-n, M-1-n+m, m*0+1]
-        diag(None, m.full, m.full.phi_out, U, N, nn_sq, ijxyp_sq)
+        diag(None, m.full, m.full.phi_out, U, N, nn_sq, ijxyp_sq, improved)
 
 def directSquare(m: SquareNetwork, M: np.ndarray, eig=0.9):
     r"""

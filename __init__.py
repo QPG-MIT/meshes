@@ -1,5 +1,5 @@
 # Meshes package.
-# Ryan Hamerly, 5/20/21
+# Ryan Hamerly, 4/27/22
 #
 # Implements the MeshNetwork class, which can be used for describing Reck and Clements meshes (or any other
 # beamsplitter mesh where couplings occur between neighboring waveguides).  Clements decomposition is also
@@ -24,6 +24,7 @@
 #   04/10/21: Added symmetric and real orthogonal crossings to the CUDA code.
 #   04/13/21: Python interface to the CUDA code via MeshNetworkGPU class.
 #   05/20/21: Added CUDA code for butterfly networks (FFT mesh).
+#   04/27/22: Added code for 3-MZI and MZI+X Riemann-sphere method.  JIT'ed mesh.dot() to speed up MVM.
 
 from .crossing import Crossing, MZICrossing, SymCrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork

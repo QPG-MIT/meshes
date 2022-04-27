@@ -1,5 +1,5 @@
 # meshes/mesh.py
-# Ryan Hamerly, 7/11/20
+# Ryan Hamerly, 4/27/22
 #
 # Implements the MeshNetwork class, which can be used for describing Reck and Clements meshes (or any other
 # beamsplitter mesh where couplings occur between neighboring waveguides).  Clements decomposition is also
@@ -13,13 +13,42 @@
 #   12/19/20: Added Direct Method for tuning triangular meshes.
 #   03/29/21: Added utility to convert between crossing types.  Tweaks to gradient function.  Hessian support.
 #   04/12/21: Forward differentiation support.
+#   04/27/22: JIT'ed mesh.dot() to speed up matrix-vector multiplication.
 
 
 import numpy as np
 import warnings
 from typing import List, Any, Tuple, Callable
+from numba import njit
 from .crossing import Crossing, MZICrossing, MZICrossingOutPhase, SymCrossing
 
+@njit
+def meshdot_helper(T, dT, v, dv, inds, lens, shifts, perms):
+    is_diff = (dT.ndim != 0); is_perm = (perms.shape[0] > 1); L = len(lens)
+
+    for n in range(L):
+        i1 = inds[n]; l = lens[n]; s = shifts[n]; i2 = i1+l
+        v1 = v[s:s+2*l:2]; v2 = v[s+1:s+2*l:2]
+        T00 = T[0,0,i1:i2].reshape((l,1)); T01 = T[0,1,i1:i2].reshape((l,1))
+        T10 = T[1,0,i1:i2].reshape((l,1)); T11 = T[1,1,i1:i2].reshape((l,1))
+        if is_perm:
+            p = perms[n]; v[:] = v[p]
+            if is_diff: dv[:] = dv[p]
+        if is_diff:
+            dv1 = dv[s:s+2*l:2]; dv2 = dv[s+1:s+2*l:2]
+            dT00 = dT[0,0,i1:i2].reshape((l,1)); dT01 = dT[0,1,i1:i2].reshape((l,1))
+            dT10 = dT[1,0,i1:i2].reshape((l,1)); dT11 = dT[1,1,i1:i2].reshape((l,1))
+            # dv -> dT*v + T*dv
+            temp   = dT00*v1 + dT01*v2 + T00*dv1 + T01*dv2
+            dv2[:] = dT10*v1 + dT11*v2 + T10*dv1 + T11*dv2
+            dv1[:] = temp
+        # v -> T*v
+        temp  = T00*v1 + T01*v2
+        v2[:] = T10*v1 + T11*v2
+        v1[:] = temp
+    if is_perm:
+        p = perms[L]; v[:] = v[p]
+        if is_diff: dv[:] = dv[p]
 
 # The base class MeshNetwork.
 
@@ -214,37 +243,42 @@ class StructuredMeshNetwork(MeshNetwork):
             return (self._get_p_crossing(p_phase), self._get_phi_out(p_phase), p_splitter)
 
     def dot(self, v, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None, dp=None, dv=None):
-        v = np.array(v, dtype=np.complex)
+        #print (self.L, self.n_cr)
+        v = np.array(v, dtype=complex); assert (v.shape[0] == self.N)
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
-        # Loop through the crossings, one row at a time.  Then apply the final phase shifts.
+        (ph_in, ph_out) = [(self.is_phase and self.phi_pos == s) for s in ['in', 'out']]
+
+        inds = np.array(self.inds); lens = np.array(self.lens); shifts = np.array(self.shifts)
+        if np.all([x is None for x in self.perm]): perms = np.empty((1, self.N), dtype=int)
+        else: perms = np.array([(np.arange(self.N) if (perm_i is None) else perm_i) for perm_i in self.perm])
+
         if (dp is None) and (dv is None):
-            # Simple inference
-            if (self.is_phase and self.phi_pos == 'in'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-            for (i, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
-                v = v if (self.perm[i] is None) else v[self.perm[i]]
-                v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L])
-            v = v if (self.perm[-1] is None) else v[self.perm[-1]]
-            if (self.is_phase and self.phi_pos == 'out'): v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-            return v
+            # Propagate fields only
+            T = self.X.T(p_crossing, p_splitter); dT = np.empty((), dtype=complex); dv = np.empty((), dtype=complex)
+            v = np.array(v, dtype=complex); sh = v.shape; v = v.reshape((sh[0], v.size//sh[0]))
+
+            # Mesh & diagonal phase screen
+            if ph_in: v *= np.exp(1j*phi_out).reshape((self.N, 1))
+            if self.L: meshdot_helper(T, dT, v, dv, inds, lens, shifts, perms)    # <-- JIT'ed code for hard part.
+            if ph_out: v *= np.exp(1j*phi_out).reshape((self.N, 1))
+
+            return v.reshape(sh)
         else:
-            # Inference plus forward error propagation.
-            dv = v*0 if (dv is None) else np.array(dv, dtype=np.complex)
-            dp = p_phase if (dp is None) else dp; dphi_out = dp[self.n_cr*self.X.n_phase:]
+            # Propagate fields and gradients
+            v = np.array(v, dtype=complex); sh = v.shape; sh_f = (sh[0], v.size//sh[0])
+            dv = (v*0 if (dv is None) else np.array(dv, dtype=complex)); v = v.reshape(sh_f); dv = dv.reshape(sh_f)
+            dp = np.zeros([self.n_phase]) if (dp is None) else dp; dphi_out = dp[self.n_cr*self.X.n_phase:]
             dp_crossing = dp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
-            if (self.is_phase):
-                phi_out = phi_out.reshape((self.N,) + (1,)*(v.ndim-1)); dphi_out = dphi_out.reshape((self.N,) + (1,)*(v.ndim-1))
-            if (self.is_phase and self.phi_pos == 'in'): 
-                v *= np.exp(1j*phi_out); dv *= np.exp(1j*phi_out); dv += 1j*dphi_out*v
-            for (i, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
-                v = v if (self.perm[i] is None) else v[self.perm[i]]
-                dv = dv if (self.perm[i] is None) else dv[self.perm[i]]
-                (v[s:s+2*L], dv[s:s+2*L]) = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L], 
-                                                       dp=dp_crossing[i1:i2], dx=dv[s:s+2*L])
-            v = v if (self.perm[-1] is None) else v[self.perm[-1]]
-            dv = dv if (self.perm[-1] is None) else dv[self.perm[-1]]
-            if (self.is_phase and self.phi_pos == 'out'): 
-                v *= np.exp(1j*phi_out); dv *= np.exp(1j*phi_out); dv += 1j*dphi_out*v
-            return (v, dv)
+            T = self.X.T(p_crossing, p_splitter)
+            dT = np.einsum('ijkl,li->jkl', self.X.dT(p_crossing, p_splitter), dp_crossing)
+            if (self.is_phase): phi_out = phi_out.reshape((self.N, 1)); dphi_out = dphi_out.reshape((self.N, 1))
+
+            # Mesh & diagonal phase screen
+            if ph_in: v *= np.exp(1j*phi_out); dv *= np.exp(1j*phi_out); dv += 1j*dphi_out*v
+            if self.L: meshdot_helper(T, dT, v, dv, inds, lens, shifts, perms)    # <-- JIT'ed code for hard part.
+            if ph_out: v *= np.exp(1j*phi_out); dv *= np.exp(1j*phi_out); dv += 1j*dphi_out*v
+
+            v = v.reshape(sh); dv = dv.reshape(sh); return (v, dv)
 
     def _L2norm_fn(self, J):
         def f(U):
