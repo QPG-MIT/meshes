@@ -192,8 +192,6 @@ class Crossing:
             raise NotImplementedError()  # TODO -- implement the left phase propagation.
 
 
-
-
 class MZICrossing(Crossing):
     @property
     def n_phase(self) -> int:
@@ -284,7 +282,6 @@ class MZICrossing(Crossing):
         return ('T11', 'T21', 'T1:', 'T2:')
 
     
-
 class MZICrossingBalanced(MZICrossing):
     def __init__(self):
         r"""
@@ -309,8 +306,6 @@ class MZICrossingBalanced(MZICrossing):
         raise NotImplementedError()
     def flip(self) -> Crossing:
         raise NotImplementedError()
-
-
 
 
 class MZICrossingOutPhase(MZICrossing):
@@ -355,8 +350,6 @@ class MZICrossingOutPhase(MZICrossing):
         return ('T22', 'T21', 'T:1', 'T:2')
 
 
-    
-
 class SymCrossing(Crossing):
     @property
     def n_phase(self) -> int:
@@ -379,7 +372,8 @@ class SymCrossing(Crossing):
         (C, C_2a, S, S_2a) = [fn(x) for fn in [np.cos, np.sin] for x in [theta/2, 2*beta]]
         return np.array([[np.exp(1j*phi)*(S + 1j*C*S_2a),  1j*C*C_2a],
                          [1j*C*C_2a, np.exp(-1j*phi)*(S - 1j*C*S_2a)]])
-    
+
+
 class MZICrossing3(Crossing):
     _X: Crossing
     @property
@@ -414,6 +408,59 @@ class MZICrossing3(Crossing):
             (T11, T12) = (T[0], T[1]); s = T11/T12
             s = (s - 1j*np.tan(eta)) / (1 - 1j*np.tan(eta)*s)
             return self._X.Tsolve((s, s*0 + 1), ind, sp[:2])
+
+
+class MZICrossingGeneric(Crossing):
+    @property
+    def n_phase(self) -> int:
+        return 2
+    @property
+    def n_splitter(self) -> int:
+        return 14     # [alpha, beta, d_phi_fab(x4), d_phi_xtalk(x4), d_abs(x4)]
+
+    out_phase: bool
+
+    def __init__(self, out_phase=False):
+        r"""
+        Class implementing a generic MZI-like crossing with crossing, phase-shifter, and nonunitary errors:
+        -->--[phi+ph_11, g_11]--| (pi/4    |--[theta+ph_12, g_12]--| (pi/4   |-->--
+        -->--[    ph_21, g_21]--|  +alpha) |--[      ph_22, g_22]--|  +beta) |-->--
+        Here p_phase = (theta, phi) and p_splitter = (alpha, beta, [ph_ij_fab], [ph_ij_xtalk], [g_ij])
+        where the phase error ph_ij = ph_ij_fab + ph_ij_xtalk is a sum of fabrication- and crosstalk-induced errors.
+        Non-unitary errors are set by g_ij.
+        :param out_phase: If True, implements the flipped version of the crossing, with output phase shifters.
+            -->--| (pi/4   |--[      ph_22, g_22]--| (pi/4    |--[    ph_21, g_21]-->--
+            -->--|  +beta) |--[theta+ph_12, g_12]--|  +alpha) |--[phi+ph_11, g_11]-->--
+        """
+        self.out_phase = out_phase
+
+    def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        (theta, phi) = np.array(p_phase).T; zero = theta*0
+        (a, b, p11, p21, p12, p22, q11, q21, q12, q22, g11, g21, g12, g22) = \
+            [x+zero for x in (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*14)]
+        # T1 & T3: phase shifters.  T2 & T4: splitters.
+        T1 = np.array([[np.exp(1j*(phi+p11+q11)+g11), zero], [zero, np.exp(1j*(p21+q21)+g21)]])
+        T2 = np.array([[   np.cos(np.pi/4+a),  1j*np.sin(np.pi/4+a)],
+                       [1j*np.sin(np.pi/4+a),     np.cos(np.pi/4+a)]])
+        T3 = np.array([[np.exp(1j*(theta+p12+q12)+g12), zero], [zero, np.exp(1j*(p22+q22)+g22)]])
+        T4 = np.array([[   np.cos(np.pi/4+b),  1j*np.sin(np.pi/4+b)],
+                       [1j*np.sin(np.pi/4+b),     np.cos(np.pi/4+b)]])
+
+        if self.out_phase:
+            T = T4
+            T = np.einsum('ij...,jk...->ik...', T3[::-1,::-1], T)
+            T = np.einsum('ij...,jk...->ik...', T2, T)
+            T = np.einsum('ij...,jk...->ik...', T1[::-1,::-1], T)
+            return T
+        else:
+            T = T1
+            T = np.einsum('ij...,jk...->ik...', T2, T)
+            T = np.einsum('ij...,jk...->ik...', T3, T)
+            T = np.einsum('ij...,jk...->ik...', T4, T)
+            return T
+
+    def flip(self) -> Crossing:
+        return MZICrossingGeneric(not self.out_phase)
 
 
 

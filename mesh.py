@@ -254,7 +254,8 @@ class StructuredMeshNetwork(MeshNetwork):
 
         if (dp is None) and (dv is None):
             # Propagate fields only
-            T = self.X.T(p_crossing, p_splitter); dT = np.empty((), dtype=complex); dv = np.empty((), dtype=complex)
+            T = np.ascontiguousarray(self.X.T(p_crossing, p_splitter))
+            dT = np.empty((), dtype=complex); dv = np.empty((), dtype=complex)
             v = np.array(v, dtype=complex); sh = v.shape; v = v.reshape((sh[0], v.size//sh[0]))
 
             # Mesh & diagonal phase screen
@@ -269,7 +270,7 @@ class StructuredMeshNetwork(MeshNetwork):
             dv = (v*0 if (dv is None) else np.array(dv, dtype=complex)); v = v.reshape(sh_f); dv = dv.reshape(sh_f)
             dp = np.zeros([self.n_phase]) if (dp is None) else dp; dphi_out = dp[self.n_cr*self.X.n_phase:]
             dp_crossing = dp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
-            T = self.X.T(p_crossing, p_splitter)
+            T = np.ascontiguousarray(self.X.T(p_crossing, p_splitter))
             dT = np.einsum('ijkl,li->jkl', self.X.dT(p_crossing, p_splitter), dp_crossing)
             if (self.is_phase): phi_out = phi_out.reshape((self.N, 1)); dphi_out = dphi_out.reshape((self.N, 1))
 

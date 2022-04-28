@@ -9,6 +9,7 @@
 #   03/06/21: JIT-ed my direct method code and added it here.
 #   03/22/21: Added Saumil's local EC method (see arXiv:2103.04993).
 #   04/13/21: Replaced 2*theta -> theta in phase shifters for consistency in notation.
+#   04/28/21: Generalized diagHelper and associated helper functions.
 
 import numpy as np
 from numba import njit
@@ -16,31 +17,13 @@ from typing import Callable, Union
 from .mesh import MeshNetwork, StructuredMeshNetwork, IdentityNetwork
 from .crossing import MZICrossing, MZICrossingOutPhase
 
-# Iterative (theta, phi) optimization to solve: <a|T(theta, phi)|b> = c.  JITted to speed up the for loop.
-@njit
-def Tsolve_abc(p_splitter, a, b, c, n, sign):
-    (Cp, C) = np.cos(p_splitter + np.pi/4); (Sp, S) = np.sin(p_splitter + np.pi/4)
-    (a1, a2) = (a[0]*C + 1j*a[1]*S, 1j*a[0]*S + a[1]*C); (b1, b2) = (b[0], b[1]); (theta, phi) = (sign*np.pi/2, 0.)
-    for i in range(n):
-        a1p = a1 * np.exp(1j*theta); (u1, u2) = (a1p*Cp + 1j*a2*Sp, 1j*a1p*Sp + a2*Cp)
-        phi = np.angle(c - b2*u2) - np.angle(b1*u1)
-        #print (np.abs(c - b1*u1*np.exp(1j*phi) - b2*u2))
-        b1p = b1 * np.exp(1j*phi); (u1, u2) = (b1p*Cp + 1j*b2*Sp, 1j*b1p*Sp + b2*Cp)
-        theta = np.angle(c - u2*a2) - np.angle(u1*a1)
-        #print (np.abs(c - u1*a1*np.exp(1j*theta) - u2*a2))
-    return np.array([theta, phi])
-@njit
-def Tsolve_abc_out(p_splitter, a, b, c, n, sign):
-    (Cp, C) = np.cos(p_splitter + np.pi/4); (Sp, S) = np.sin(p_splitter + np.pi/4)
-    (a1, a2) = (a[0], a[1]); (b1, b2) = (b[0]*Cp + 1j*b[1]*Sp, 1j*b[0]*Sp + b[1]*Cp); (theta, phi) = (sign*np.pi/2, 0.)
-    for i in range(n):
-        b1p = b1 * np.exp(1j*theta); (u1, u2) = (b1p*C + 1j*b2*S, 1j*b1p*S + b2*C)
-        phi = np.angle(c - u1*a1) - np.angle(u2*a2)
-        #print (np.abs(c - u2*a2*np.exp(1j*phi) - u1*a1))
-        a2p = a2 * np.exp(1j*phi); (u1, u2) = (a1*C + 1j*a2p*S, 1j*a1*S + a2p*C)
-        theta = np.angle(c - b2*u2) - np.angle(b1*u1)
-        #print (np.abs(c - b1*u1*np.exp(1j*theta) - b2*u2))
-    return np.array([theta, phi])
+
+T = dict()
+Tsolve_abc = dict()
+Tsolve_11 = dict()
+diagHelper = dict()
+directHelper = dict()
+
 # Numba-accelerated functions for T(theta, phi).
 @njit
 def T_mzi(p, s):
@@ -53,10 +36,45 @@ def T_mzi_o(p, s):
     (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
     (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
     return np.exp(1j*theta/2) * np.array([[    (1j*S*Cm - C*Sp),       ( 1j*C*Cp - S*Sm)],
-                                        [f * (1j*C*Cp + S*Sm),   f * (-1j*S*Cm - C*Sp)]])
+                                          [f * (1j*C*Cp + S*Sm),   f * (-1j*S*Cm - C*Sp)]])
+T[MZICrossing] = T_mzi
+T[MZICrossingOutPhase] = T_mzi_o
 
+# Minimize f(x, y) = |A + B e^ix + C e^iy + D e^i(x+y)| by line search.
 @njit
-def Tsolve_11(T, p_splitter):
+def linesearch(A, B, C, D, n, sign):
+    (theta, phi) = (np.pi/2*sign, 0)
+    for i in range(n):
+        temp  = np.exp(1j*theta); phi   = np.angle(-(A + temp*B)) - np.angle(C + temp*D)
+        temp  = np.exp(1j*phi);   theta = np.angle(-(A + temp*C)) - np.angle(B + temp*D)
+        # print (i, theta, phi)
+    return np.array([theta, phi])
+
+# Iterative (theta, phi) optimization to solve: <a|T(theta, phi)|b> = c.  JITted to speed up the for loop.
+@njit
+def Tsolve_abc_mzi(p_splitter, a, b, c, n, sign):
+    (Ca, Cb) = np.cos(p_splitter + np.pi/4); (Sa, Sb) = np.sin(p_splitter + np.pi/4)
+    (a1p, a2p) = (a[0]*Cb + 1j*a[1]*Sb, a[1]*Cb + 1j*a[0]*Sb); (b1, b2) = b
+    A =     a2p*b2*Ca - c
+    B =  1j*a1p*b2*Sa
+    C =  1j*a2p*b1*Sa
+    D =     a1p*b1*Ca
+    return linesearch(A, B, C, D, n, sign)
+@njit
+def Tsolve_abc_mzi_o(p_splitter, a, b, c, n, sign):
+    (Ca, Cb) = np.cos(p_splitter + np.pi/4); (Sa, Sb) = np.sin(p_splitter + np.pi/4)
+    (a1, a2) = a; (b1p, b2p) = (b[0]*Ca + 1j*b[1]*Sa, b[1]*Ca + 1j*b[0]*Sa)
+    A =  1j*a1*b2p*Sb - c
+    B =     a1*b1p*Cb
+    C =     a2*b2p*Cb
+    D =  1j*a2*b1p*Sb
+    return linesearch(A, B, C, D, n, sign)
+Tsolve_abc[MZICrossing] = Tsolve_abc_mzi
+Tsolve_abc[MZICrossingOutPhase] = Tsolve_abc_mzi_o
+
+# Optimization to solve T(theta, phi)[0, 0] = T
+@njit
+def Tsolve_11_mzi(T, p_splitter):
     (alpha, beta) = p_splitter
     Cp = np.cos(alpha+beta); Cm = np.cos(alpha-beta); Sp = np.sin(alpha+beta); Sm = np.sin(alpha-beta)
     # Input target T = T[0, 0]
@@ -65,6 +83,8 @@ def Tsolve_11(T, p_splitter):
     if (np.isnan(theta2)): theta2 = 0.
     phi = np.angle(T) - np.angle(1j*Cm*np.sin(theta2) - np.cos(theta2)*Sp) - theta2
     return np.array([theta2*2, phi])
+Tsolve_11[MZICrossing] = Tsolve_11_mzi
+Tsolve_11[MZICrossingOutPhase] = Tsolve_11_mzi
 
 
 
@@ -106,60 +126,71 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     #print (np.array([i, j, x, y, ind, r]).T)
     #print (U.shape); print (VdV.shape); print (WWd.shape)
     ijzp = np.array([i, j, ind, r]).T; rand = np.random.randint(0, 2, len(ijzp))*2 - 1
+    diagHelper = get_diagHelper(type(m1.X), type(m2.X))
     diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand, improved)
     phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
 
 # Super-fast Numba JIT-accelerated self-configuration code that implements the matrix diagonalization method.
 # Runs 10-20x faster than pure Python version.
-@njit
-def diagHelper(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand, improved):
-    #X = np.array(U)
-    for k in range(len(ijzp)):
-        (i, j, ind, p) = ijzp[k]  # (i, j): element to zero.  ind: MZI index.  p: 0 (left mesh) or 1 (right mesh)
-        upper = (i < j)           # (i, j) in upper triangle
-        if (p == 0):
-            j1 = (j-1 if upper else j); (u, v) = U[i, j1:j1+2]
-            if (u == 0. and v == 0.): (u, v) = (1.+0.j, 0.+0.j) if upper else (0.+0.j, 1.+0.j)
-            T0dag = np.array([[v, u.conjugate()], [-u, v.conjugate()]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
-            if upper: T0dag[:, :] = T0dag[:, ::-1]
-            Z[:, j1:j1+2] = Z[:, j1:j1+2].dot(T_mzi(c1[ind], p1[ind]).conj().T)
-            wj = WWd[:, j1:j1+2].dot(T0dag[:, j-j1])
-            vi = VdV[i, :].dot(Z)
-            res = wj.dot(vi) - wj[j1:j1+2].dot(vi[j1:j1+2])
-            c1[ind] = Tsolve_abc(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, rand[k])
-            T = T_mzi(c1[ind], p1[ind])
-            if improved:
-                U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T.T.conj())
-                #WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T.T.conj())  # (these cancel out)
-                #WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
-            else:
-                U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T0dag)
-                WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T0dag)
-                WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
-            #X[:, j1:j1+2] = X[:, j1:j1+2].dot(T.conj().T)
-        else:
-            i1 = (i if upper else i-1); (u, v) = U[i1:i1+2, j]
-            if (u == 0. and v == 0.): (u, v) = (0.+0.j, 1.+0.j) if upper else (1.+0.j, 0.+0.j)
-            T0dag = np.array([[u.conjugate(), v.conjugate()], [ v, -u]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
-            if upper: T0dag[:, :] = T0dag[::-1, :]
-            Z[i1:i1+2, :] = T_mzi_o(c2[ind], p2[ind]).conj().T.dot(Z[i1:i1+2, :])
-            wj = Z.dot(WWd[:, j])
-            vi = T0dag[i-i1, :].dot(VdV[i1:i1+2, :])
-            res = wj.dot(vi) - wj[i1:i1+2].dot(vi[i1:i1+2])
-            c2[ind] = Tsolve_abc_out(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, rand[k])
-            T = T_mzi_o(c2[ind], p2[ind])
-            if improved:
-                U[i1:i1+2, :]   = T.T.conj().dot(U[i1:i1+2, :])
-                #VdV[i1:i1+2, :] = T.T.conj().dot(VdV[i1:i1+2, :])  # (these cancel out)
-                #VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
-            else:
-                U[i1:i1+2, :]   = T0dag.dot(U[i1:i1+2, :])
-                VdV[i1:i1+2, :] = T0dag.dot(VdV[i1:i1+2, :])
-                VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
-            #X[i1:i1+2, :] = T.conj().T.dot(X[i1:i1+2, :])
-        #print ((i, j), ':', ind, p)#, ' *'[err_i])
-        #print ((np.abs(X) > 1e-6).astype(int))
+def get_diagHelper(type_i, type_o):
+    if (type_i in diagHelper):
+        return diagHelper[type_i]
 
+    print ("Creating diagHelper for type ", type_i, " and ", type_o)
+
+    T_i = T[type_i];  Tsolve_abc_i = Tsolve_abc[type_i]
+    T_o = T[type_o];  Tsolve_abc_o = Tsolve_abc[type_o]
+
+    def diagHelper_fn(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand, improved):
+        #X = np.array(U)
+        for k in range(len(ijzp)):
+            (i, j, ind, p) = ijzp[k]  # (i, j): element to zero.  ind: MZI index.  p: 0 (left mesh) or 1 (right mesh)
+            upper = (i < j)           # (i, j) in upper triangle
+            if (p == 0):
+                j1 = (j-1 if upper else j); (u, v) = U[i, j1:j1+2]
+                if (u == 0. and v == 0.): (u, v) = (1.+0.j, 0.+0.j) if upper else (0.+0.j, 1.+0.j)
+                T0dag = np.array([[v, u.conjugate()], [-u, v.conjugate()]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
+                if upper: T0dag[:, :] = T0dag[:, ::-1]
+                Z[:, j1:j1+2] = Z[:, j1:j1+2].dot(T_i(c1[ind], p1[ind]).conj().T)
+                wj = WWd[:, j1:j1+2].dot(T0dag[:, j-j1])
+                vi = VdV[i, :].dot(Z)
+                res = wj.dot(vi) - wj[j1:j1+2].dot(vi[j1:j1+2])
+                c1[ind] = Tsolve_abc_i(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, rand[k])
+                T = T_i(c1[ind], p1[ind])
+                if improved:
+                    U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T.T.conj())
+                    #WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T.T.conj())  # (these cancel out)
+                    #WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
+                else:
+                    U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T0dag)
+                    WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T0dag)
+                    WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
+                #X[:, j1:j1+2] = X[:, j1:j1+2].dot(T.conj().T)
+            else:
+                i1 = (i if upper else i-1); (u, v) = U[i1:i1+2, j]
+                if (u == 0. and v == 0.): (u, v) = (0.+0.j, 1.+0.j) if upper else (1.+0.j, 0.+0.j)
+                T0dag = np.array([[u.conjugate(), v.conjugate()], [ v, -u]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
+                if upper: T0dag[:, :] = T0dag[::-1, :]
+                Z[i1:i1+2, :] = T_o(c2[ind], p2[ind]).conj().T.dot(Z[i1:i1+2, :])
+                wj = Z.dot(WWd[:, j])
+                vi = T0dag[i-i1, :].dot(VdV[i1:i1+2, :])
+                res = wj.dot(vi) - wj[i1:i1+2].dot(vi[i1:i1+2])
+                c2[ind] = Tsolve_abc_o(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, rand[k])
+                T = T_o(c2[ind], p2[ind])
+                if improved:
+                    U[i1:i1+2, :]   = T.T.conj().dot(U[i1:i1+2, :])
+                    #VdV[i1:i1+2, :] = T.T.conj().dot(VdV[i1:i1+2, :])  # (these cancel out)
+                    #VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
+                else:
+                    U[i1:i1+2, :]   = T0dag.dot(U[i1:i1+2, :])
+                    VdV[i1:i1+2, :] = T0dag.dot(VdV[i1:i1+2, :])
+                    VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
+                #X[i1:i1+2, :] = T.conj().T.dot(X[i1:i1+2, :])
+            #print ((i, j), ':', ind, p)#, ' *'[err_i])
+            #print ((np.abs(X) > 1e-6).astype(int))
+    diagHelper_fn = njit(diagHelper_fn)
+    diagHelper[type_i] = diagHelper_fn
+    return diagHelper_fn
 
 
 def direct(m: StructuredMeshNetwork, U: np.ndarray, diag: str, dk_max=1):
@@ -193,41 +224,53 @@ def direct(m: StructuredMeshNetwork, U: np.ndarray, diag: str, dk_max=1):
     Tlist = np.zeros([N+5, 2, 2], dtype=np.complex); w = np.zeros([N], dtype=np.complex)
 
     # Numba JIT-accelerated helper function.
+    directHelper = get_directHelper(type(m.X))
     directHelper(np.concatenate(pos), np.array([len(p) for p in pos]), np.array(m.inds), p_splitter, m.p_crossing,
                  phi_out, of, is_of, env, m.L, U, Upost, Tlist, w, dk_max)
 
     m.phi_out[:] = phi_out
 
 # Numba JIT helper function for the direct method.
-@njit
-def directHelper(pos, lpos, inds, p_splitter, p_crossing, phi_out, outfield, is_of, env, L, U, Upost, Tlist, w, dkmax):
-    ipos = np.roll(np.cumsum(lpos), 1); ipos[0] = 0
-    for (ip, lp) in zip(ipos, lpos):
-        pos_i = pos[ip:ip+lp]
-        N = len(U); E_in = 1.0; ptr_last = 0; l = pos_i[-1, 2]; w[:] = 0
-        (i, ind, ptr) = (0, 0, 0)
-        for (m, (i, j, ind, _)) in enumerate(pos_i[::-1]):  # Adjust MZIs *down* the diagonal one by one.
-            ptr = inds[i] + j
-            k = outfield[i+ind] if (is_of[i+ind]) else ind  # Output index (or two) k:k+dk
-            dk = (min(dkmax, outfield[i+ind+2]-k) if (is_of[i+ind+2]) else dkmax) if (i < L-1) else 1
-            U_kl = U[k:k+dk, l]
-            T11 = (U_kl - w[k:k+dk]).sum()/(E_in*Upost[k:k+dk, ind]).sum()
-            (theta, phi) = Tsolve_11(T11, p_splitter[ptr])
-            p_crossing[ptr, 0] = theta
-            if m: p_crossing[ptr_last, 1] = phi  # Set theta for crossing & phi to *upper-left* of crossing.
-            else: phi_out[ind] = phi
-            T = Tlist[m] = T_mzi(np.array([theta, phi]), p_splitter[ptr])
-            w += E_in * T[0, 0] * Upost[:, ind]
-            E_in *= T[1, 0]
-            phi_out[ind+1] = np.angle(U[k, ind+1]) - np.angle(Upost[k, ind]*T[0, 1])
-            ptr_last = ptr
-        k = (ind+1) if (i == L-1 or ind > env[i+1]) else outfield[i+ind+2]
-        dk = (min(dkmax, outfield[i+ind+4]-k) if (is_of[i+ind+4]) else dkmax) if (i < L-1) else 1
-        # Set final phase shift.
-        p_crossing[ptr,1] = phi = (np.angle((U[k:k+dk,l]-w[k:k+dk]).sum()) - np.angle((E_in*Upost[k:k+dk,ind+1]).sum()))
-        Upost[:, ind+1] *= np.exp(1j*phi)
-        for (ind, T) in zip(pos_i[:, 2], Tlist[len(pos_i)-1::-1]):
-            Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)   # Multiply Upost by diagonal's T.
+def get_directHelper(type):
+    assert type == MZICrossingOutPhase   # TODO -- make this generalizable like get_diagHelper
+    if (type in directHelper):
+        return directHelper[type]
+    #
+    # T_fn = T[type];  Tsolve_11_fn = Tsolve_11[type]
+
+    def directHelper_fn(pos, lpos, inds, p_splitter, p_crossing, phi_out, outfield, is_of, env, L,
+                        U, Upost, Tlist, w, dkmax):
+        ipos = np.roll(np.cumsum(lpos), 1); ipos[0] = 0
+        for (ip, lp) in zip(ipos, lpos):
+            pos_i = pos[ip:ip+lp]
+            N = len(U); E_in = 1.0; ptr_last = 0; l = pos_i[-1, 2]; w[:] = 0
+            (i, ind, ptr) = (0, 0, 0)
+            for (m, (i, j, ind, _)) in enumerate(pos_i[::-1]):  # Adjust MZIs *down* the diagonal one by one.
+                ptr = inds[i] + j
+                k = outfield[i+ind] if (is_of[i+ind]) else ind  # Output index (or two) k:k+dk
+                dk = (min(dkmax, outfield[i+ind+2]-k) if (is_of[i+ind+2]) else dkmax) if (i < L-1) else 1
+                U_kl = U[k:k+dk, l]
+                T11 = (U_kl - w[k:k+dk]).sum()/(E_in*Upost[k:k+dk, ind]).sum()
+                (theta, phi) = Tsolve_11_mzi(T11, p_splitter[ptr])
+                p_crossing[ptr, 0] = theta
+                if m: p_crossing[ptr_last, 1] = phi  # Set theta for crossing & phi to *upper-left* of crossing.
+                else: phi_out[ind] = phi
+                T = Tlist[m] = T_mzi(np.array([theta, phi]), p_splitter[ptr])   # TODO -- why T_mzi not T_mzi_o?
+                w += E_in * T[0, 0] * Upost[:, ind]
+                E_in *= T[1, 0]
+                phi_out[ind+1] = np.angle(U[k, ind+1]) - np.angle(Upost[k, ind]*T[0, 1])
+                ptr_last = ptr
+            k = (ind+1) if (i == L-1 or ind > env[i+1]) else outfield[i+ind+2]
+            dk = (min(dkmax, outfield[i+ind+4]-k) if (is_of[i+ind+4]) else dkmax) if (i < L-1) else 1
+            # Set final phase shift.
+            p_crossing[ptr,1] = phi = \
+                (np.angle((U[k:k+dk,l]-w[k:k+dk]).sum()) - np.angle((E_in*Upost[k:k+dk,ind+1]).sum()))
+            Upost[:, ind+1] *= np.exp(1j*phi)
+            for (ind, T) in zip(pos_i[:, 2], Tlist[len(pos_i)-1::-1]):
+                Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)   # Multiply Upost by diagonal's T.
+    directHelper_fn = njit(directHelper_fn)
+    directHelper[type] = directHelper_fn
+    return directHelper_fn
 
 def errcorr_local(mesh: StructuredMeshNetwork, p_splitter: np.ndarray) -> StructuredMeshNetwork:
     r"""
