@@ -218,7 +218,7 @@ class SymClementsNetwork(MeshNetwork):
                  clem: ClementsNetwork=None,
                  X: Crossing=MZICrossing(),
                  method='ratio',
-                 warn=True):
+                 args=dict()):
         r"""
         Constructs a symmetric Clements network.  This is the product of two triangle meshes with the phase shifts
         along the rising center diagonal.
@@ -254,8 +254,8 @@ class SymClementsNetwork(MeshNetwork):
 
         if not (method in ['diag', 'diag*']):
             m1.flip(True);
-            calibrateTriangle(m2, M2, 'down', method, warn=warn)               #  <-- Hard work done here.
-            calibrateTriangle(m1, M1[::-1,::-1].T, 'down', method, warn=warn)  #  <-- Hard work done here.
+            calibrateTriangle(m2, M2, 'down', method, **args)               #  <-- Hard work done here.
+            calibrateTriangle(m1, M1[::-1,::-1].T, 'down', method, **args)  #  <-- Hard work done here.
             m1.flip(True)
             if (clem.N%2): m1.phi_out[-1] = np.angle(M1[-1,-1])
             else: m2.phi_out[0] = np.angle(M2[0,0])
@@ -268,7 +268,7 @@ class SymClementsNetwork(MeshNetwork):
         self.X = X
 
         if (method in ['diag', 'diag*']):
-            diagClements(self, M, method=='diag*')       #  <-- Hard work done here.
+            diagClements(self, M, method=='diag*', **args)       #  <-- Hard work done here.
 
     def clements(self, phi_pos='out') -> ClementsNetwork:
         r"""
@@ -319,7 +319,7 @@ class SymClementsNetwork(MeshNetwork):
 
     # TODO -- implement grad_phi
 
-def diagClements(m: SymClementsNetwork, U: np.ndarray, improved: bool):
+def diagClements(m: SymClementsNetwork, U: np.ndarray, improved: bool, **args):
     r"""
     Self-configures a Clements mesh according to the diagonalization method.
     :param m: Instance of SymClementsNetwork.
@@ -332,5 +332,5 @@ def diagClements(m: SymClementsNetwork, U: np.ndarray, improved: bool):
         return m+1
     def ijxyp_cl(m, n):
         return [N-1-m+n, n, -n, N-2-m+n, m*0+1] if (m[0]%2) else [N-1-n, m-n, n, m-n, m*0]
-    diag(m.m1, m.m2, m.phi_diag, U, N-1, nn_cl, ijxyp_cl, improved)
+    diag(m.m1, m.m2, m.phi_diag, U, N-1, nn_cl, ijxyp_cl, improved, **args)
 

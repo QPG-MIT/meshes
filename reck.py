@@ -24,9 +24,9 @@ class ReckNetwork(StructuredMeshNetwork):
                  X: Crossing=MZICrossing(),
                  M: np.ndarray=None,
                  N: int=None,
+                 phi_pos='out',
                  method: str='diag',
-                 warn=False,
-                 phi_pos='out'):
+                 args=dict()):
         r"""
         Mesh network based on the Reck (triangular) decomposition.
         :param N: Number of inputs / outputs.
@@ -36,6 +36,7 @@ class ReckNetwork(StructuredMeshNetwork):
         :param N: Size.  Used for initializing a blank Reck mesh.
         :param method: Method used to program the Reck mesh in presence of errors: 'direct' or 'ratio'.
         :param phi_pos: Position of phase shifts: 'in' or 'out'.
+        :param args: Arguments to pass to the setter (diag(), direct(), ...)
         """
         assert (M is None) ^ (N is None)
         if (M is not None): 
@@ -64,18 +65,18 @@ class ReckNetwork(StructuredMeshNetwork):
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
                   p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N),
                   X=X.flip() if (phi_pos == 'in') else X, phi_pos=phi_pos)
-            diagReck(self, M, method=='diag*')
+            diagReck(self, M, method=='diag*', **args)
         elif (method == 'direct'):
             assert (phi_pos == 'in')
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
                   p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N),
                   X=X.flip() if (phi_pos == 'in') else X, phi_pos=phi_pos)
-            direct(self, M, 'down')
+            direct(self, M, 'down', **args)
         else:
             assert phi_pos == 'in'
             super(ReckNetwork, self).__init__(N, lens, shifts, p_splitter=p_splitter,
                   p_crossing=np.zeros([N*(N-1)//2, X.n_phase]), phi_out=np.zeros(N), X=X.flip(), phi_pos='in')
-            calibrateTriangle(self, M, 'down', method, warn)
+            calibrateTriangle(self, M, 'down', method, **args)
 
 
 
@@ -144,7 +145,7 @@ def reorder_reck(N: int, data: np.ndarray, reverse=False) -> np.ndarray:
             ind_in += 1
     return out
 
-def diagReck(m: ReckNetwork, U: np.ndarray, improved: bool):
+def diagReck(m: ReckNetwork, U: np.ndarray, improved: bool, **args):
     r"""
     Self-configures a Reck mesh according to the diagonalization method.
     :param m: Instance of ReckNetwork.
@@ -156,8 +157,8 @@ def diagReck(m: ReckNetwork, U: np.ndarray, improved: bool):
     def nn_rk(m): return N-1-m
     if out:
         def ijxyp_rk(m, n): return [m, N-1-n, m*2+n, N-2-n, m*0 + 1 - out]
-        diag(m, None, m.phi_out, U, N-1, nn_rk, ijxyp_rk, improved)
+        diag(m, None, m.phi_out, U, N-1, nn_rk, ijxyp_rk, improved, **args)
     else:
         def ijxyp_rk(m, n): return [N-1-n, m, -m*2-n, N-2-n, m*0 + 1 - out]
-        diag(None, m, m.phi_out, U, N-1, nn_rk, ijxyp_rk, improved)
+        diag(None, m, m.phi_out, U, N-1, nn_rk, ijxyp_rk, improved, **args)
 

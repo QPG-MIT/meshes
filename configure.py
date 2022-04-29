@@ -133,7 +133,7 @@ Tsolve_11[MZICrossingOutPhase] = Tsolve_11_mzi
 
 
 def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork, None],
-         phi_diag: np.ndarray, U: np.ndarray, nm: int, nn: Callable, ijxyp: Callable, improved: bool):
+         phi_diag: np.ndarray, U: np.ndarray, nm: int, nn: Callable, ijxyp: Callable, improved: bool, sigp: float=0.):
     r"""
     Calibrates a beamsplitter mesh using the diagonalization method, detailed in my note.
     Accelerated by Numba JIT.
@@ -146,6 +146,7 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     :param ijxyp: Returns [i, j, x, y, p], function of (m, n).  (i, j): Matrix element zeroed.  (x, y): MZI position.
     p: which mesh (0 for m1, 1 for m2).
     :param improved: Whether to use the improved method (better updates to V, W when nulling is imperfect)
+    :param sigp: Programming error for each phase shifter (modeled as a Gaussian)
     :return:
     """
     assert (m1 is not None) or (m2 is not None)
@@ -170,7 +171,7 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     #print (U.shape); print (VdV.shape); print (WWd.shape)
     ijzp = np.array([i, j, ind, r]).T; rand = np.random.randint(0, 2, len(ijzp))*2 - 1
     diagHelper = get_diagHelper(type(m1.X), type(m2.X))
-    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand, improved)
+    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand, improved, sigp)
     phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
 
 # Super-fast Numba JIT-accelerated self-configuration code that implements the matrix diagonalization method.
@@ -184,7 +185,7 @@ def get_diagHelper(type_i, type_o):
     T_i = T[type_i];  Tsolve_abc_i = Tsolve_abc[type_i]
     T_o = T[type_o];  Tsolve_abc_o = Tsolve_abc[type_o]
 
-    def diagHelper_fn(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand, improved):
+    def diagHelper_fn(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand, improved, sigp):
         #X = np.array(U)
         for k in range(len(ijzp)):
             (i, j, ind, p) = ijzp[k]  # (i, j): element to zero.  ind: MZI index.  p: 0 (left mesh) or 1 (right mesh)
@@ -199,6 +200,7 @@ def get_diagHelper(type_i, type_o):
                 vi = VdV[i, :].dot(Z)
                 res = wj.dot(vi) - wj[j1:j1+2].dot(vi[j1:j1+2])
                 c1[ind] = Tsolve_abc_i(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, rand[k])
+                c1[ind] += np.random.randn(2)*sigp
                 T = T_i(c1[ind], p1[ind])
                 if improved:
                     U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T.T.conj())
@@ -219,6 +221,7 @@ def get_diagHelper(type_i, type_o):
                 vi = T0dag[i-i1, :].dot(VdV[i1:i1+2, :])
                 res = wj.dot(vi) - wj[i1:i1+2].dot(vi[i1:i1+2])
                 c2[ind] = Tsolve_abc_o(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, rand[k])
+                c2[ind] += np.random.randn(2)*sigp
                 T = T_o(c2[ind], p2[ind])
                 if improved:
                     U[i1:i1+2, :]   = T.T.conj().dot(U[i1:i1+2, :])
