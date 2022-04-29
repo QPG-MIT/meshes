@@ -229,6 +229,7 @@ class SymClementsNetwork(MeshNetwork):
         :param method: Calibration method used: 'direct', 'ratio', 'mod', 'new'.
         :param warn: Throws a warning if mesh cannot be calibrated correctly.
         """
+        init_clem = (clem is not None)
         assert (M is None) ^ (clem is None)
         assert (method in ['direct', 'ratio', 'mod', 'diag', 'diag*'])
         N = len(M) if (clem is None) else clem.N
@@ -247,7 +248,7 @@ class SymClementsNetwork(MeshNetwork):
         clem = ClementsNetwork(N=N, X=X.flip(), phi_pos='in')
         (m1, m2) = clem.split();
         self.p_splitter = s = np.array(p_splitter) * np.ones([clem.n_cr, clem.X.n_splitter]);
-        m1.flip_crossings(True)
+        m1.flip_crossings(True, override=(not init_clem))
 
         (m1.p_splitter, m2.p_splitter) = np.split(s, [m1.n_cr])
 

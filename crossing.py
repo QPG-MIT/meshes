@@ -209,13 +209,15 @@ class MZICrossing(Crossing):
         """
         pass
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
-        (theta, phi) = np.array(p_phase).T; (a, b) = (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2)
+        (theta, phi) = np.array(p_phase).T
+        (a, b) = (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2)
         (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [a+b, a-b, theta/2]]
         return np.exp(1j*theta/2) * np.array([[np.exp(1j*phi) * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
                                               [np.exp(1j*phi) * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
 
     def dT(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
-        (theta, phi) = np.array(p_phase).T; (a, b) = (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2)
+        (theta, phi) = np.array(p_phase).T
+        (a, b) = (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2)
         (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [a+b, a-b, theta/2]]
         return (np.exp(1j*np.array([[[phi+theta/2, theta/2]]])) *
                 np.array([[[0.5j*(1j*S*Cm-C*Sp)+0.5*( 1j*C*Cm+S*Sp),   0.5j*( 1j*C*Cp-S*Sm)+0.5*(-1j*S*Cp-C*Sm)],
@@ -420,7 +422,7 @@ class MZICrossingGeneric(Crossing):
 
     out_phase: bool
 
-    def __init__(self, out_phase=False):
+    def __init__(self):
         r"""
         Class implementing a generic MZI-like crossing with crossing, phase-shifter, and nonunitary errors:
         -->--[phi+ph_11, g_11]--| (pi/4    |--[theta+ph_12, g_12]--| (pi/4   |-->--
@@ -428,11 +430,8 @@ class MZICrossingGeneric(Crossing):
         Here p_phase = (theta, phi) and p_splitter = (alpha, beta, [ph_ij_fab], [ph_ij_xtalk], [g_ij])
         where the phase error ph_ij = ph_ij_fab + ph_ij_xtalk is a sum of fabrication- and crosstalk-induced errors.
         Non-unitary errors are set by g_ij.
-        :param out_phase: If True, implements the flipped version of the crossing, with output phase shifters.
-            -->--| (pi/4   |--[      ph_22, g_22]--| (pi/4    |--[    ph_21, g_21]-->--
-            -->--|  +beta) |--[theta+ph_12, g_12]--|  +alpha) |--[phi+ph_11, g_11]-->--
         """
-        self.out_phase = out_phase
+        self.out_phase = False
 
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
         (theta, phi) = np.array(p_phase).T; zero = theta*0
@@ -460,7 +459,24 @@ class MZICrossingGeneric(Crossing):
             return T
 
     def flip(self) -> Crossing:
-        return MZICrossingGeneric(not self.out_phase)
+        return MZICrossingGenericOutPhase()
+
+class MZICrossingGenericOutPhase(MZICrossingGeneric):
+    def __init__(self):
+        r"""
+        Class implementing a generic MZI-like crossing with crossing, phase-shifter, and nonunitary errors.
+        Flipped so that phases are on the outputs.
+        -->--| (pi/4   |--[      ph_22, g_22]--| (pi/4    |--[    ph_21, g_21]-->--
+        -->--|  +beta) |--[theta+ph_12, g_12]--|  +alpha) |--[phi+ph_11, g_11]-->--
+        Here p_phase = (theta, phi) and p_splitter = (alpha, beta, [ph_ij_fab], [ph_ij_xtalk], [g_ij])
+        where the phase error ph_ij = ph_ij_fab + ph_ij_xtalk is a sum of fabrication- and crosstalk-induced errors.
+        Non-unitary errors are set by g_ij.
+        :param out_phase: If True, implements the flipped version of the crossing, with output phase shifters.
+        """
+        self.out_phase = True
+
+    def flip(self) -> Crossing:
+        return MZICrossingGeneric()
 
 
 

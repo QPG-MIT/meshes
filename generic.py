@@ -15,7 +15,7 @@
 import numpy as np
 from typing import List
 from scipy.optimize import minimize
-from .crossing import MZICrossingGeneric
+from .crossing import MZICrossingGeneric, MZICrossingGenericOutPhase
 from .mesh import MeshNetwork, StructuredMeshNetwork
 
 
@@ -130,7 +130,7 @@ class MeshNetworkGeneric(MeshNetwork):
         :param ind: Self-configuration sequence.
         """
         if (W is None): W = StructuredMeshNetwork(V.N, [], [], X=MZICrossingGeneric(), is_phase=False)
-        if (V is None): V = StructuredMeshNetwork(W.N, [], [], X=MZICrossingGeneric(True), is_phase=False)
+        if (V is None): V = StructuredMeshNetwork(W.N, [], [], X=MZICrossingGenericOutPhase(), is_phase=False)
         assert (W.N == V.N); self.W = W; self.V = V; self._N = W.N
         self.D = D
         self.ind = ind

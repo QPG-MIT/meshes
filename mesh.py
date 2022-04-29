@@ -401,31 +401,36 @@ class StructuredMeshNetwork(MeshNetwork):
                                      np.array(self.p_splitter), perm=self.perm, is_phase=self.is_phase,
                                      X=self.X, phi_pos=self.phi_pos)
 
-    def flip_crossings(self, inplace=False) -> 'StructuredMeshNetwork':
+    def flip_crossings(self, inplace=False, override=False) -> 'StructuredMeshNetwork':
         r"""
         Flips the mesh, i.e. from one with output phase shifters to input phase shifters and vice versa.  Only works
         for MZI meshes.
         :param inplace: Performs the operation inplace or returns a copy.
+        :param override: Instead of throwing an error for non-MZI meshes, simply doesn't do the phase propagation
+        (not needed in code e.g. when initializing a mesh before self-configuration).
         :return: The flipped StructuredMeshNetwork object.
         """
         if not inplace:
             self = self.copy()
+        X = self.X; self.X = X.flip()
 
         if (self.phi_pos == 'out'):
-            assert isinstance(self.X, MZICrossing)
-            self.X = MZICrossingOutPhase()
-            for (m, len, shift, ind) in list(zip(range(self.L), self.lens, self.shifts, self.inds))[::-1]:
-                phi = self.p_crossing[ind:ind+len, 1]
-                (psi1, psi2) = self.phi_out[shift:shift+2*len].reshape([len, 2]).T
-                (phi[:], psi1[:], psi2[:]) = np.array([psi2-psi1, phi+psi1, psi1])
+            if isinstance(X, MZICrossing):
+                for (m, len, shift, ind) in list(zip(range(self.L), self.lens, self.shifts, self.inds))[::-1]:
+                    phi = self.p_crossing[ind:ind+len, 1]
+                    (psi1, psi2) = self.phi_out[shift:shift+2*len].reshape([len, 2]).T
+                    (phi[:], psi1[:], psi2[:]) = np.array([psi2-psi1, phi+psi1, psi1])
+            else:
+                if not override: raise NotImplementedError()
             self.phi_pos = 'in'
         else:
-            assert isinstance(self.X, MZICrossingOutPhase)
-            self.X = MZICrossing()
-            for (m, len, shift, ind) in list(zip(range(self.L), self.lens, self.shifts, self.inds)):
-                phi = self.p_crossing[ind:ind+len, 1]
-                (psi1, psi2) = self.phi_out[shift:shift+2*len].reshape([len, 2]).T
-                (phi[:], psi1[:], psi2[:]) = np.array([psi1-psi2, psi2, phi+psi2])
+            if isinstance(X, MZICrossingOutPhase):
+                for (m, len, shift, ind) in list(zip(range(self.L), self.lens, self.shifts, self.inds)):
+                    phi = self.p_crossing[ind:ind+len, 1]
+                    (psi1, psi2) = self.phi_out[shift:shift+2*len].reshape([len, 2]).T
+                    (phi[:], psi1[:], psi2[:]) = np.array([psi1-psi2, psi2, phi+psi2])
+            else:
+                if not override: raise NotImplementedError()
             self.phi_pos = 'out'
         return self
 

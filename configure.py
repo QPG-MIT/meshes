@@ -15,7 +15,7 @@ import numpy as np
 from numba import njit
 from typing import Callable, Union
 from .mesh import MeshNetwork, StructuredMeshNetwork, IdentityNetwork
-from .crossing import MZICrossing, MZICrossingOutPhase
+from .crossing import MZICrossing, MZICrossingOutPhase, MZICrossingGeneric, MZICrossingGenericOutPhase
 
 
 T = dict()
@@ -24,21 +24,45 @@ Tsolve_11 = dict()
 diagHelper = dict()
 directHelper = dict()
 
+@njit
+def inv_2x2(M):
+    detM = M[0,0]*M[1,1] - M[0,1]*M[1,0]
+    return np.array([[ M[1,1], -M[0,1]],
+                     [-M[1,0],  M[0,0]]]) / detM
+
 # Numba-accelerated functions for T(theta, phi).
 @njit
 def T_mzi(p, s):
+    # MZICrossing
     (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
     (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
     return np.exp(1j*theta/2) * np.array([[f * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
                                           [f * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
 @njit
 def T_mzi_o(p, s):
+    # MZICrossingOutPhase
     (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
     (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
     return np.exp(1j*theta/2) * np.array([[    (1j*S*Cm - C*Sp),       ( 1j*C*Cp - S*Sm)],
                                           [f * (1j*C*Cp + S*Sm),   f * (-1j*S*Cm - C*Sp)]])
+@njit
+def T_gmzi(p, s):
+    # MZICrossingGeneric
+    (t_theta, t_phi) = np.exp(1j*p); (t11, t21, t12, t22) = np.exp(1j*(s[2:6] + s[6:10]) + s[10:14])
+    (Ca, Cb) = np.cos(s[:2] + np.pi/4); (Sa, Sb) = np.sin(s[:2] + np.pi/4)
+    # T = V*U.  U: phi+bs1, V: theta+bs2
+    U11 =    t11*Ca*t_phi;  U12 = 1j*t21*Sa;  V11 =    t12*Cb*t_theta;  V12 = 1j*t22*Sb
+    U21 = 1j*t11*Sa*t_phi;  U22 =    t21*Ca;  V21 = 1j*t12*Sb*t_theta;  V22 =    t22*Cb
+    return np.array([[V11*U11 + V12*U21, V11*U12 + V12*U22],
+                     [V21*U11 + V22*U21, V21*U12 + V22*U22]])
+@njit
+def T_gmzi_o(p, s):
+    # MZICrossingGenericOutPhase
+    return T_gmzi(p, s).T[::-1,::-1]
 T[MZICrossing] = T_mzi
 T[MZICrossingOutPhase] = T_mzi_o
+T[MZICrossingGeneric] = T_gmzi
+T[MZICrossingGenericOutPhase] = T_gmzi_o
 
 # Minimize f(x, y) = |A + B e^ix + C e^iy + D e^i(x+y)| by line search.
 @njit
@@ -53,6 +77,7 @@ def linesearch(A, B, C, D, n, sign):
 # Iterative (theta, phi) optimization to solve: <a|T(theta, phi)|b> = c.  JITted to speed up the for loop.
 @njit
 def Tsolve_abc_mzi(p_splitter, a, b, c, n, sign):
+    # MZICrossing
     (Ca, Cb) = np.cos(p_splitter + np.pi/4); (Sa, Sb) = np.sin(p_splitter + np.pi/4)
     (a1p, a2p) = (a[0]*Cb + 1j*a[1]*Sb, a[1]*Cb + 1j*a[0]*Sb); (b1, b2) = b
     A =     a2p*b2*Ca - c
@@ -62,6 +87,7 @@ def Tsolve_abc_mzi(p_splitter, a, b, c, n, sign):
     return linesearch(A, B, C, D, n, sign)
 @njit
 def Tsolve_abc_mzi_o(p_splitter, a, b, c, n, sign):
+    # MZICrossingOutPhase
     (Ca, Cb) = np.cos(p_splitter + np.pi/4); (Sa, Sb) = np.sin(p_splitter + np.pi/4)
     (a1, a2) = a; (b1p, b2p) = (b[0]*Ca + 1j*b[1]*Sa, b[1]*Ca + 1j*b[0]*Sa)
     A =  1j*a1*b2p*Sb - c
@@ -69,8 +95,26 @@ def Tsolve_abc_mzi_o(p_splitter, a, b, c, n, sign):
     C =     a2*b2p*Cb
     D =  1j*a2*b1p*Sb
     return linesearch(A, B, C, D, n, sign)
+@njit
+def Tsolve_abc_gmzi(p_splitter, a, b, c, n, sign):
+    # MZICrossingGeneric
+    (t11, t21, t12, t22) = np.exp(1j*(p_splitter[2:6] + p_splitter[6:10]) + p_splitter[10:14])
+    (Ca, Cb) = np.cos(p_splitter[:2] + np.pi/4); (Sa, Sb) = np.sin(p_splitter[:2] + np.pi/4)
+    (a1p, a2p) = ((a[0]*Cb + 1j*a[1]*Sb)*t12, (a[1]*Cb + 1j*a[0]*Sb)*t22); (b1p, b2p) = (b[0]*t11, b[1]*t21)
+    A =     a2p*b2p*Ca - c
+    B =  1j*a1p*b2p*Sa
+    C =  1j*a2p*b1p*Sa
+    D =     a1p*b1p*Ca
+    return linesearch(A, B, C, D, n, sign)
+@njit
+def Tsolve_abc_gmzi_o(p_splitter, a, b, c, n, sign):
+    # MZICrossingGenericOutPhase
+    # Easy since T_out = T^tr[::-1, ::-1], so <a|T_out|b> = [b2,b1]*T*[a2,a1]
+    return Tsolve_abc_gmzi(p_splitter, b[::-1], a[::-1], c, n, sign)
 Tsolve_abc[MZICrossing] = Tsolve_abc_mzi
 Tsolve_abc[MZICrossingOutPhase] = Tsolve_abc_mzi_o
+Tsolve_abc[MZICrossingGeneric] = Tsolve_abc_gmzi
+Tsolve_abc[MZICrossingGenericOutPhase] = Tsolve_abc_gmzi_o
 
 # Optimization to solve T(theta, phi)[0, 0] = T
 @njit
@@ -107,7 +151,6 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     assert (m1 is not None) or (m2 is not None)
     if (m1 is None): m1 = IdentityNetwork(m2.N, X=m2.X.flip())
     if (m2 is None): m2 = IdentityNetwork(m1.N, X=m1.X.flip())
-    assert isinstance(m1.X, MZICrossing) and isinstance(m2.X, MZICrossingOutPhase)
     U = np.array(U, dtype=np.complex, order="C"); N = m1.N; assert (U.shape == (N, N))
     # (V0)* V and W (W0)*, where V0 is ideal, V is with real components.  Goal: match U = V*W
     VdV = np.eye(N, dtype=np.complex); WWd = np.eye(N, dtype=np.complex); Z = np.eye(N, dtype=np.complex)
@@ -151,7 +194,7 @@ def get_diagHelper(type_i, type_o):
                 if (u == 0. and v == 0.): (u, v) = (1.+0.j, 0.+0.j) if upper else (0.+0.j, 1.+0.j)
                 T0dag = np.array([[v, u.conjugate()], [-u, v.conjugate()]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
                 if upper: T0dag[:, :] = T0dag[:, ::-1]
-                Z[:, j1:j1+2] = Z[:, j1:j1+2].dot(T_i(c1[ind], p1[ind]).conj().T)
+                Z[:, j1:j1+2] = Z[:, j1:j1+2].dot(inv_2x2(T_i(c1[ind], p1[ind])))
                 wj = WWd[:, j1:j1+2].dot(T0dag[:, j-j1])
                 vi = VdV[i, :].dot(Z)
                 res = wj.dot(vi) - wj[j1:j1+2].dot(vi[j1:j1+2])
@@ -171,7 +214,7 @@ def get_diagHelper(type_i, type_o):
                 if (u == 0. and v == 0.): (u, v) = (0.+0.j, 1.+0.j) if upper else (1.+0.j, 0.+0.j)
                 T0dag = np.array([[u.conjugate(), v.conjugate()], [ v, -u]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
                 if upper: T0dag[:, :] = T0dag[::-1, :]
-                Z[i1:i1+2, :] = T_o(c2[ind], p2[ind]).conj().T.dot(Z[i1:i1+2, :])
+                Z[i1:i1+2, :] = inv_2x2(T_o(c2[ind], p2[ind])).dot(Z[i1:i1+2, :])
                 wj = Z.dot(WWd[:, j])
                 vi = T0dag[i-i1, :].dot(VdV[i1:i1+2, :])
                 res = wj.dot(vi) - wj[i1:i1+2].dot(vi[i1:i1+2])
