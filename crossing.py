@@ -438,10 +438,10 @@ class MZICrossingGeneric(Crossing):
         (a, b, p11, p21, p12, p22, q11, q21, q12, q22, g11, g21, g12, g22) = \
             [x+zero for x in (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*14)]
         # T1 & T3: phase shifters.  T2 & T4: splitters.
-        T1 = np.array([[np.exp(1j*(phi+p11+q11)+g11), zero], [zero, np.exp(1j*(p21+q21)+g21)]])
+        T1 = np.array([[np.exp(1j*(phi+p11+q11)+g11/2), zero], [zero, np.exp(1j*(p21+q21)+g21/2)]])
         T2 = np.array([[   np.cos(np.pi/4+a),  1j*np.sin(np.pi/4+a)],
                        [1j*np.sin(np.pi/4+a),     np.cos(np.pi/4+a)]])
-        T3 = np.array([[np.exp(1j*(theta+p12+q12)+g12), zero], [zero, np.exp(1j*(p22+q22)+g22)]])
+        T3 = np.array([[np.exp(1j*(theta+p12+q12)+g12/2), zero], [zero, np.exp(1j*(p22+q22)+g22/2)]])
         T4 = np.array([[   np.cos(np.pi/4+b),  1j*np.sin(np.pi/4+b)],
                        [1j*np.sin(np.pi/4+b),     np.cos(np.pi/4+b)]])
 

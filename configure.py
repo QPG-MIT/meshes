@@ -48,7 +48,7 @@ def T_mzi_o(p, s):
 @njit
 def T_gmzi(p, s):
     # MZICrossingGeneric
-    (t_theta, t_phi) = np.exp(1j*p); (t11, t21, t12, t22) = np.exp(1j*(s[2:6] + s[6:10]) + s[10:14])
+    (t_theta, t_phi) = np.exp(1j*p); (t11, t21, t12, t22) = np.exp(1j*(s[2:6] + s[6:10]) + s[10:14]/2)
     (Ca, Cb) = np.cos(s[:2] + np.pi/4); (Sa, Sb) = np.sin(s[:2] + np.pi/4)
     # T = V*U.  U: phi+bs1, V: theta+bs2
     U11 =    t11*Ca*t_phi;  U12 = 1j*t21*Sa;  V11 =    t12*Cb*t_theta;  V12 = 1j*t22*Sb
@@ -98,7 +98,7 @@ def Tsolve_abc_mzi_o(p_splitter, a, b, c, n, sign):
 @njit
 def Tsolve_abc_gmzi(p_splitter, a, b, c, n, sign):
     # MZICrossingGeneric
-    (t11, t21, t12, t22) = np.exp(1j*(p_splitter[2:6] + p_splitter[6:10]) + p_splitter[10:14])
+    (t11, t21, t12, t22) = np.exp(1j*(p_splitter[2:6] + p_splitter[6:10]) + p_splitter[10:14]/2)
     (Ca, Cb) = np.cos(p_splitter[:2] + np.pi/4); (Sa, Sb) = np.sin(p_splitter[:2] + np.pi/4)
     (a1p, a2p) = ((a[0]*Cb + 1j*a[1]*Sb)*t12, (a[1]*Cb + 1j*a[0]*Sb)*t22); (b1p, b2p) = (b[0]*t11, b[1]*t21)
     A =     a2p*b2p*Ca - c
