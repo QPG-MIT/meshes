@@ -313,7 +313,7 @@ class StructuredMeshNetwork(MeshNetwork):
         return (J[0], grad)
 
     def grad_phi(self, v, w, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None):
-        assert np.all([p is None for p in self.perm])  # TODO -- handle permutations.
+        perm = [(np.arange(self.N) if p is None else p) for p in self.perm]; perm_bk = [np.argsort(p) for p in perm]
         assert self.phi_pos == 'out'  # TODO -- handle phase shifts on inputs too.
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
         v = v + 0j; Nc = self.n_cr*self.X.n_phase; grad = np.zeros(Nc+self.N*self.is_phase)
@@ -321,7 +321,9 @@ class StructuredMeshNetwork(MeshNetwork):
 
         # Forward pass
         for (n, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
+            v = v[perm[n]]
             v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L])
+        v = v[perm[self.L]]
         if self.is_phase:
             v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
         # Can use callable w to specify a derivative based on the output matrix v.
@@ -331,11 +333,13 @@ class StructuredMeshNetwork(MeshNetwork):
             grad_phiout[:] = np.real(-1j * w * v.conj()).sum(-1)
             w *= np.exp(-1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
             v *= np.exp(-1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
+        w = w[perm_bk[self.L]]; v = v[perm_bk[self.L]]
         for n in range(len(self.lens)-1, -1, -1):
             (i1, i2, L, s) = (self.inds[n], self.inds[n+1], self.lens[n], self.shifts[n])
             v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L], True)
             grad_xing[i1:i2] = self.X.grad(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L], w[s:s+2*L])
             w[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], w[s:s+2*L], True)
+            w = w[perm_bk[n]]; v = v[perm_bk[n]]
         return (grad, w)
 
     def hvp(self, vec, v, w: Callable, p_phase=None, p_splitter=None, eps=1e-3) -> np.ndarray:
