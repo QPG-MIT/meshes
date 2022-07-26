@@ -17,7 +17,7 @@
 #   01/05/21: Added new Clements tuning method (diagnoalization).
 #   03/03/21: Extended "new" (matrix diagonalization) method to Reck and general mesh shapes.
 #   03/06/21: Revamped SquareNet.  Added the triangular QR mesh.
-#   03/22/21: Created ButterflyNetwork class and added the local error correction routine errcorr_local
+#   03/22/21: Created ButterflyNetwork class and added the local error correction routine errcorr_local.
 #   03/29/21: Added CartesianCrossing class, crossing conversion utilities, tweaks to gradient function, Hessians.
 #   04/03/21: First working CUDA code for mesh propagation.
 #   04/06/21: Added forward- and reverse-mode differentiation to the CUDA code.
@@ -25,6 +25,7 @@
 #   04/13/21: Python interface to the CUDA code via MeshNetworkGPU class.
 #   05/20/21: Added CUDA code for butterfly networks (FFT mesh).
 #   04/27/22: Added code for 3-MZI and MZI+X Riemann-sphere method.  JIT'ed mesh.dot() to speed up MVM.
+#   07/25/22: JIT'ed mesh.dot_vjp(), added module meshes.jax for JAX compatibility.
 
 from .crossing import Crossing, MZICrossing, SymCrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork

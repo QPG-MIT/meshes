@@ -14,6 +14,7 @@
 #   03/29/21: Added utility to convert between crossing types.  Tweaks to gradient function.  Hessian support.
 #   04/12/21: Forward differentiation support.
 #   04/27/22: JIT'ed mesh.dot() to speed up matrix-vector multiplication.
+#   07/25/22: JIT'ed mesh.dot_vjp() (formerly grad_phi()) to speed up VJP, streamline JAX differentiation.
 
 
 import numpy as np
@@ -23,21 +24,28 @@ from numba import njit
 from .crossing import Crossing, MZICrossing, MZICrossingOutPhase, SymCrossing
 
 @njit
-def meshdot_helper(T, dT, v, dv, inds, lens, shifts, perms):
-    is_diff = (dT.ndim != 0); is_perm = (perms.shape[0] > 1); L = len(lens)
+def meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, mode):
+    is_fd = (mode == 1); is_bd = (mode == 2); tr = int(is_bd); #is_diff = (dT.size != 0);
+    if is_bd: pos = 1-pos; T[:] = T.conj(); ph[:] = -ph;
+    is_perm = (perms.size != 0); L = len(lens); (i, j) = (tr, 1-tr)
+    (n1, n2, dn) = (L-1, -1, -1) if (mode == 2) else (0, L, 1)
 
-    for n in range(L):
+    if (pos == 0):
+        T_ph = np.exp(1j*ph).reshape((len(ph),1)); v[:] *= T_ph
+        if is_fd: dv[:] = dv*T_ph + 1j*v*dph.reshape((len(ph),1))
+        if is_bd: dv[:] = dv*T_ph; dph[:] = np.real(-1j*dv*v.conj()).sum(-1)
+    for n in range(n1, n2, dn):
         i1 = inds[n]; l = lens[n]; s = shifts[n]; i2 = i1+l
         v1 = v[s:s+2*l:2]; v2 = v[s+1:s+2*l:2]
-        T00 = T[0,0,i1:i2].reshape((l,1)); T01 = T[0,1,i1:i2].reshape((l,1))
-        T10 = T[1,0,i1:i2].reshape((l,1)); T11 = T[1,1,i1:i2].reshape((l,1))
+        T00 = T[0,0,i1:i2].reshape((l,1)); T01 = T[i,j,i1:i2].reshape((l,1))
+        T10 = T[j,i,i1:i2].reshape((l,1)); T11 = T[1,1,i1:i2].reshape((l,1))
         if is_perm:
-            p = perms[n]; v[:] = v[p]
-            if is_diff: dv[:] = dv[p]
-        if is_diff:
+            p = perms[n + int(is_bd)]; v[:] = v[p]
+            if is_fd or is_bd: dv[:] = dv[p]
+        if is_fd:
             dv1 = dv[s:s+2*l:2]; dv2 = dv[s+1:s+2*l:2]
-            dT00 = dT[0,0,i1:i2].reshape((l,1)); dT01 = dT[0,1,i1:i2].reshape((l,1))
-            dT10 = dT[1,0,i1:i2].reshape((l,1)); dT11 = dT[1,1,i1:i2].reshape((l,1))
+            dT00 = dT[0,0,i1:i2].reshape((l,1)); dT01 = dT[i,j,i1:i2].reshape((l,1))
+            dT10 = dT[j,i,i1:i2].reshape((l,1)); dT11 = dT[1,1,i1:i2].reshape((l,1))
             # dv -> dT*v + T*dv
             temp   = dT00*v1 + dT01*v2 + T00*dv1 + T01*dv2
             dv2[:] = dT10*v1 + dT11*v2 + T10*dv1 + T11*dv2
@@ -46,9 +54,23 @@ def meshdot_helper(T, dT, v, dv, inds, lens, shifts, perms):
         temp  = T00*v1 + T01*v2
         v2[:] = T10*v1 + T11*v2
         v1[:] = temp
+        if is_bd:
+            dv1 = dv[s:s+2*l:2]; dv2 = dv[s+1:s+2*l:2]
+            # dJ/dT_ij = (dJ/dy_i)* x_j
+            dT[0,0,i1:i2] = (dv1.conj()*v1).sum(-1); dT[0,1,i1:i2] = (dv1.conj()*v2).sum(-1)
+            dT[1,0,i1:i2] = (dv2.conj()*v1).sum(-1); dT[1,1,i1:i2] = (dv2.conj()*v2).sum(-1)
+            # dv -> T*dv
+            temp   = T00*dv1 + T01*dv2
+            dv2[:] = T10*dv1 + T11*dv2
+            dv1[:] = temp
     if is_perm:
-        p = perms[L]; v[:] = v[p]
-        if is_diff: dv[:] = dv[p]
+        p = perms[0 if is_bd else L]; v[:] = v[p]
+        if is_fd or is_bd: dv[:] = dv[p]
+    if (pos == 1):
+        T_ph = np.exp(1j*ph).reshape((len(ph),1)); v[:] *= T_ph
+        if is_fd: dv[:] = dv*T_ph + 1j*v*dph.reshape((len(ph),1))
+        if is_bd: dv[:] = dv*T_ph; dph[:] = np.real(-1j*dv*v.conj()).sum(-1)
+    if is_bd: ph[:] = -ph
 
 # The base class MeshNetwork.
 
@@ -96,6 +118,19 @@ class MeshNetwork:
         :return: Output vector / matrix.
         """
         raise NotImplementedError()
+    def dot_vjp(self, v, dJdv, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None) \
+            -> Tuple[np.ndarray, np.ndarray]:
+        r"""
+        Performs the vector-Jacobi product of the dot() function.
+        :param v: Output field
+        :param dJdv: Gradient dJ/dv*
+        :param p_phase: Phase parameters (phi_k), dim=(N^2)
+        :param p_splitter: Beamsplitter parameters.
+        :param p_crossing: Crossing parameters, dim=(N(N-1)/2, 2)
+        :param phi_out: Phase screen, dim=(N)
+        :return: A tuple (dJ/dp, dJ/dv*)
+        """
+        raise NotImplementedError()
     def matrix(self, p_phase=None, p_splitter=None) -> np.ndarray:
         r"""
         Computes the input-output matrix.  Equivalent to self.dot(np.eye(self.N))
@@ -104,30 +139,39 @@ class MeshNetwork:
         :return: NxN matrix.
         """
         return self.dot(np.eye(self.N), p_phase, p_splitter)
-    def grad_phi(self, v, w, p_phase=None, p_splitter=None) -> np.ndarray:
+
+    def L2norm(self, U_target, p_phase=None, p_splitter=None) -> float:
         r"""
-        Computes the gradient with respect to phase shifts phi.
-        :param v: Input matrix / vector (normally np.eye(M)), size (M, ...)
-        :param w: Output gradient matrix / vector dJ/d(U*), size (N, ...)
-        :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
-        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
-        :return:
-        """
-        raise NotImplementedError()
-    def grad_phi_target(self, U_target, p_phase=None, p_splitter=None) -> Tuple[float, np.ndarray]:
-        r"""
-        Gets the gradient of the L2 norm |U - U_target|^2 with respect to the phase parameters.
+        Returns the L2 norm |U_target^dag * U - 1|^2.  If is_phase=False, only takes norm over off-diagonal elements.
         :param U_target: Target matrix, size (M, N)
         :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
         :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
         :return:
         """
-        J = [0]
-        def f(U): V = U - U_target; J[0] = np.linalg.norm(V)**2; return V
-        grad = 2*np.real(self.grad_phi(np.eye(self.M), f, p_phase, p_splitter)[0])
-        return (J[0], grad)
+        J = [0]; f = self._L2norm_fn(J); f(self.dot(U_target.T.conj(), p_phase=p_phase, p_splitter=p_splitter))
+        return J[0]
+    def grad_L2(self, U_target, p_phase=None, p_splitter=None) -> Tuple[float, np.ndarray]:
+        r"""
+        Gets the gradient of the L2 norm |U_target^dag * U - 1|^2 with respect to the phase parameters.  If is_phase=False
+        (no phase screen), only takes the norm over off-diagonal elements (phase screen can correct for the diagonal).
+        :param U_target: Target matrix, size (M, N)
+        :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
+        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
+        :return:
+        """
+        J = [0]; f = self._L2norm_fn(J)
+        v = self.dot(U_target.T.conj()); dJdv = f(v)
+        dJdp = self.dot_vjp(v, dJdv, p_phase, p_splitter)[0]
+        return (J[0], dJdp)
 
-
+    # These functions are deprecated and will soon be removed (use dot_vjp and meshes.jax routines instead).
+    def grad_phi(self, v, w, p_phase=None, p_splitter=None) -> np.ndarray:
+        warnings.warn("Function grad_phi() is deprecated, use dot_vjp() or import meshes.jax instead.")
+        Mv = self.dot(v)
+        return self.dot_vjp(Mv, w, p_phase=p_phase, p_splitter=p_splitter)
+    def grad_phi_target(self, U_target, p_phase=None, p_splitter=None) -> Tuple[float, np.ndarray]:
+        warnings.warn("Function grad_phi_target() is deprecated, use grad_L2() instead.")
+        return self.grad_L2(U_target, p_phase, p_splitter)
 
 
 class StructuredMeshNetwork(MeshNetwork):
@@ -242,44 +286,33 @@ class StructuredMeshNetwork(MeshNetwork):
         else:
             return (self._get_p_crossing(p_phase), self._get_phi_out(p_phase), p_splitter)
 
-    def dot(self, v, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None, dp=None, dv=None):
-        #print (self.L, self.n_cr)
-        v = np.array(v, dtype=complex); assert (v.shape[0] == self.N)
+    def _dot_pars(self, p_phase, p_splitter, p_crossing, phi_out):
         (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
-        (ph_in, ph_out) = [(self.is_phase and self.phi_pos == s) for s in ['in', 'out']]
-
         inds = np.array(self.inds); lens = np.array(self.lens); shifts = np.array(self.shifts)
-        if np.all([x is None for x in self.perm]): perms = np.empty((1, self.N), dtype=int)
+        if np.all([x is None for x in self.perm]): perms = np.empty((0, 0), dtype=int)
         else: perms = np.array([(np.arange(self.N) if (perm_i is None) else perm_i) for perm_i in self.perm])
+        pos = {'in': 0, 'out': 1}[self.phi_pos] if self.is_phase else -1
+        return (p_crossing, phi_out, p_splitter, inds, lens, shifts, perms, pos)
 
+    def dot(self, v, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None, dp=None, dv=None):
+        assert (v.shape[0] == self.N)
+        v = np.array(v, complex, order="C"); sh = v.shape; sh_f = (sh[0], v.size//sh[0]); v = v.reshape(sh_f);
+        (p_cr, ph, p_sp, inds, lens, shifts, perms, pos) = self._dot_pars(p_phase, p_splitter, p_crossing, phi_out)
+
+        T = np.ascontiguousarray(self.X.T(p_cr, p_sp))
         if (dp is None) and (dv is None):
             # Propagate fields only
-            T = np.ascontiguousarray(self.X.T(p_crossing, p_splitter))
-            dT = np.empty((), dtype=complex); dv = np.empty((), dtype=complex)
-            v = np.array(v, dtype=complex); sh = v.shape; v = v.reshape((sh[0], v.size//sh[0]))
-
-            # Mesh & diagonal phase screen
-            if ph_in: v *= np.exp(1j*phi_out).reshape((self.N, 1))
-            if self.L: meshdot_helper(T, dT, v, dv, inds, lens, shifts, perms)    # <-- JIT'ed code for hard part.
-            if ph_out: v *= np.exp(1j*phi_out).reshape((self.N, 1))
-
+            dT = np.empty((0,0,0), complex); dv = np.empty((0,0), complex); dph = np.empty((0,), float)
+            if self.L: meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, 0)     # <-- JIT'ed for speed
             return v.reshape(sh)
         else:
             # Propagate fields and gradients
-            v = np.array(v, dtype=complex); sh = v.shape; sh_f = (sh[0], v.size//sh[0])
-            dv = (v*0 if (dv is None) else np.array(dv, dtype=complex)); v = v.reshape(sh_f); dv = dv.reshape(sh_f)
-            dp = np.zeros([self.n_phase]) if (dp is None) else dp; dphi_out = dp[self.n_cr*self.X.n_phase:]
-            dp_crossing = dp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
-            T = np.ascontiguousarray(self.X.T(p_crossing, p_splitter))
-            dT = np.einsum('ijkl,li->jkl', self.X.dT(p_crossing, p_splitter), dp_crossing)
-            if (self.is_phase): phi_out = phi_out.reshape((self.N, 1)); dphi_out = dphi_out.reshape((self.N, 1))
-
-            # Mesh & diagonal phase screen
-            if ph_in: v *= np.exp(1j*phi_out); dv *= np.exp(1j*phi_out); dv += 1j*dphi_out*v
-            if self.L: meshdot_helper(T, dT, v, dv, inds, lens, shifts, perms)    # <-- JIT'ed code for hard part.
-            if ph_out: v *= np.exp(1j*phi_out); dv *= np.exp(1j*phi_out); dv += 1j*dphi_out*v
-
-            v = v.reshape(sh); dv = dv.reshape(sh); return (v, dv)
+            dv = (v*0 if (dv is None) else np.array(dv, dtype=complex, order="C")); dv = dv.reshape(sh_f)
+            dp = np.zeros([self.n_phase]) if (dp is None) else dp; dph = dp[self.n_cr*self.X.n_phase:]
+            dp_cr = dp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
+            dT = np.einsum('ijkl,li->jkl', self.X.dT(p_crossing, p_splitter), dp_cr)
+            if self.L: meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, 0)     # <-- JIT'ed for speed
+            return (v.reshape(sh), dv.reshape(sh))
 
     def _L2norm_fn(self, J):
         def f(U):
@@ -288,59 +321,20 @@ class StructuredMeshNetwork(MeshNetwork):
             J[0] = np.linalg.norm(V)**2; return 2*V
         return f
 
-    def L2norm(self, U_target, p_phase=None, p_splitter=None) -> float:
-        r"""
-        Returns the L2 norm |U_target^dag * U - 1|^2.  If is_phase=False, only takes norm over off-diagonal elements.
-        :param U_target: Target matrix, size (M, N)
-        :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
-        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
-        :return:
-        """
-        J = [0]; f = self._L2norm_fn(J); f(self.dot(U_target.T.conj(), p_phase=p_phase, p_splitter=p_splitter))
-        return J[0]
+    def dot_vjp(self, v, dJdv, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None) \
+            -> Tuple[np.ndarray, np.ndarray]:
+        (p_cr, ph, p_sp, inds, lens, shifts, perms, pos) = self._dot_pars(p_phase, p_splitter, p_crossing, phi_out)
+        perms_bk = np.array([np.argsort(p) for p in perms]) if perms.size else perms
 
-    def grad_phi_target(self, U_target, p_phase=None, p_splitter=None) -> Tuple[float, np.ndarray]:
-        r"""
-        Gets the gradient of the L2 norm |U_target^dag * U - 1|^2 with respect to the phase parameters.  If is_phase=False
-        (no phase screen), only takes the norm over off-diagonal elements (phase screen can correct for the diagonal).
-        :param U_target: Target matrix, size (M, N)
-        :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
-        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
-        :return:
-        """
-        J = [0]; f = self._L2norm_fn(J)
-        grad = np.real(self.grad_phi(U_target.T.conj(), f, p_phase, p_splitter)[0])
-        return (J[0], grad)
+        sh = v.shape; sh_f = (sh[0], v.size//sh[0])
+        v = np.array(v, complex, order="C").reshape(sh_f); dJdv = np.array(dJdv, complex, order="C").reshape(sh_f)
+        dJdp = np.zeros([self.n_phase]); dJdph = dJdp[self.n_cr*self.X.n_phase:]
+        dJdp_cr = dJdp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
 
-    def grad_phi(self, v, w, p_phase=None, p_splitter=None, p_crossing=None, phi_out=None):
-        perm = [(np.arange(self.N) if p is None else p) for p in self.perm]; perm_bk = [np.argsort(p) for p in perm]
-        assert self.phi_pos == 'out'  # TODO -- handle phase shifts on inputs too.
-        (p_crossing, phi_out, p_splitter) = self._defaults(p_phase, p_splitter, p_crossing, phi_out)
-        v = v + 0j; Nc = self.n_cr*self.X.n_phase; grad = np.zeros(Nc+self.N*self.is_phase)
-        grad_phiout = grad[Nc:]; grad_xing = grad[:Nc].reshape((self.n_cr, self.X.n_phase))
-
-        # Forward pass
-        for (n, i1, i2, L, s) in zip(range(self.L), self.inds[:-1], self.inds[1:], self.lens, self.shifts):
-            v = v[perm[n]]
-            v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L])
-        v = v[perm[self.L]]
-        if self.is_phase:
-            v *= np.exp(1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-        # Can use callable w to specify a derivative based on the output matrix v.
-        w = w(v) if callable(w) else np.array(w)
-        # Reverse pass.  Back-propagate v rather than storing it to save memory (arithmetic intensity is low).
-        if self.is_phase:
-            grad_phiout[:] = np.real(-1j * w * v.conj()).sum(-1)
-            w *= np.exp(-1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-            v *= np.exp(-1j*phi_out).reshape((self.N,) + (1,)*(v.ndim-1))
-        w = w[perm_bk[self.L]]; v = v[perm_bk[self.L]]
-        for n in range(len(self.lens)-1, -1, -1):
-            (i1, i2, L, s) = (self.inds[n], self.inds[n+1], self.lens[n], self.shifts[n])
-            v[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L], True)
-            grad_xing[i1:i2] = self.X.grad(p_crossing[i1:i2], p_splitter[i1:i2], v[s:s+2*L], w[s:s+2*L])
-            w[s:s+2*L] = self.X.dot(p_crossing[i1:i2], p_splitter[i1:i2], w[s:s+2*L], True)
-            w = w[perm_bk[n]]; v = v[perm_bk[n]]
-        return (grad, w)
+        T = np.ascontiguousarray(self.X.T(p_cr, p_sp)); dJdT = T*0
+        if self.L: meshdot_helper(T, dJdT, ph, dJdph, v, dJdv, inds, lens, shifts, perms_bk, pos, 2)  # <-- JIT'ed fn
+        dJdp_cr[:] = self.X.grad(p_cr, p_sp, gradT=dJdT.transpose(2, 0, 1))
+        return (dJdp, dJdv)
 
     def hvp(self, vec, v, w: Callable, p_phase=None, p_splitter=None, eps=1e-3) -> np.ndarray:
         r"""

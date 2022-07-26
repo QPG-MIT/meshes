@@ -13,6 +13,7 @@
 #   03/29/21: Added CartesianCrossing (non-singular parameterization) and crossing conversion utility.
 #   04/07/21: Slight speedup using numpy.einsum for dot(), rdot(), grad().
 #   04/13/21: Replaced 2*theta -> theta in phase shifters for consistency in notation.
+#   07/25/22: Added functionality to Crossing.grad() needed to speed up JIT'ed mesh VJP function.
 
 import numpy as np
 from typing import Any, Tuple
@@ -141,21 +142,24 @@ class Crossing:
         (m, n) = y.shape; T = (self.Tdag if dag else self.T)(p_phase, p_splitter).reshape([2,2,n//2]).transpose((2,0,1))
         return np.einsum('ijk,jkl->ijl', y.reshape([m, n//2, 2]), T).reshape(y.shape)
 
-    def grad(self, p_phase, p_splitter, x, gradY) -> np.ndarray:
+    def grad(self, p_phase, p_splitter, x=None, gradY=None, gradT=None) -> np.ndarray:
         r"""
         Obtains the gradient dJ/d[p_phase], using forward- and back-propagating fields x, gradY.
         :param p_phase: Array of size (k, n_phase)
         :param p_splitter: Array of size (k, n_splitter)
-        :param x: Forward-propagating field, size (k, q)
-        :param gradY: Back-propagating gradient dJ/d[y*], size (k, q)
-        :return: Array of size (k/2, n_phase)
+        :param x: Forward-propagating field, size (k, 2, q)
+        :param gradY: Back-propagating gradient dJ/d[y*], size (k, 2, q).
+        :param gradT: Matrix gradient dJ/dT_ij, size (k, 2, 2).  Must specify either (x, gradY) or (gradT).
+        :return: Array of size (k, n_phase)
         """
-        dT = self.dT(p_phase, p_splitter).transpose((0, 3, 1, 2))
-        (r, k, m, n) = dT.shape; q = x.shape[1]
-        x = x.reshape((k, n, q)); gradY = gradY.reshape((k, m, q))
-        dTx = (dT.reshape((r, k, m, n, 1)) * x.reshape((1, k, 1, n, q))).sum(axis=3)
-        return np.real(np.einsum('jkl,ijkl->ji', gradY, dTx.conj()))
-        # Gotta love the index manipulation lol
+        dTdp = self.dT(p_phase, p_splitter).transpose((0, 3, 1, 2))
+        (r, k, m, n) = dTdp.shape; assert (m, n) == (2, 2);
+        if (gradT is None):
+            q = x.shape[-1]; x = x.reshape((k, 2, q)); gradY = gradY.reshape((k, 2, q))
+            dT = np.einsum('ijl,ikl->ijk', gradY.conj(), x)         # First calculate dJ/dT_ij = dJ/dy_i * x_j
+        else:
+            dT = gradT
+        return np.real(np.einsum('ijkl,jkl->ji', dTdp, dT))         # Next calculate dJ/dp = dJ/dT_ij * dT_ij/dp
 
     def convert(self,
                 out: 'Crossing',
