@@ -10,12 +10,14 @@
 #   03/22/21: Added Saumil's local EC method (see arXiv:2103.04993).
 #   04/13/21: Replaced 2*theta -> theta in phase shifters for consistency in notation.
 #   04/28/21: Generalized diagHelper and associated helper functions.
+#   08/27/22: Added support for 3-MZI.
 
 import numpy as np
 from numba import njit
 from typing import Callable, Union
 from .mesh import MeshNetwork, StructuredMeshNetwork, IdentityNetwork
-from .crossing import MZICrossing, MZICrossingOutPhase, MZICrossingGeneric, MZICrossingGenericOutPhase
+from .crossing import MZICrossing, MZICrossingOutPhase, MZICrossing3, MZICrossing3OutPhase, \
+    MZICrossingGeneric, MZICrossingGenericOutPhase
 
 
 T = dict()
@@ -34,17 +36,21 @@ def inv_2x2(M):
 @njit
 def T_mzi(p, s):
     # MZICrossing
+    if (len(s) == 3):
+        ((T11, T12), (T21, T22)) = T_mzi(p, s[:2]); (C, S) = (np.cos(s[2]), np.sin(s[2]))  # If 3rd splitter
+        return np.array([[C*T11 + 1j*S*T12, 1j*S*T11 + C*T12], [C*T21 + 1j*S*T22, 1j*S*T21 + C*T22]])
     (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
-    (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
-    return np.exp(1j*theta/2) * np.array([[f * (1j*S*Cm - C*Sp),    1j*C*Cp - S*Sm],
-                                          [f * (1j*C*Cp + S*Sm),   -1j*S*Cm - C*Sp]])
+    (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi); t = np.exp(1j*theta/2)
+    return t * np.array([[f*(1j*S*Cm - C*Sp), 1j*C*Cp - S*Sm], [f*(1j*C*Cp + S*Sm), -1j*S*Cm - C*Sp]])
 @njit
 def T_mzi_o(p, s):
     # MZICrossingOutPhase
+    if (len(s) == 3):
+        ((T11, T12), (T21, T22)) = T_mzi_o(p, s[:2]); (C, S) = (np.cos(s[2]), np.sin(s[2]))  # If 3rd splitter
+        return np.array([[C*T11 + 1j*S*T21, C*T12 + 1j*S*T22], [1j*S*T11 + C*T21, 1j*S*T12 + C*T22]])
     (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
-    (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi)
-    return np.exp(1j*theta/2) * np.array([[    (1j*S*Cm - C*Sp),       ( 1j*C*Cp - S*Sm)],
-                                          [f * (1j*C*Cp + S*Sm),   f * (-1j*S*Cm - C*Sp)]])
+    (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi); t = np.exp(1j*theta/2)
+    return t * np.array([[1j*S*Cm - C*Sp, 1j*C*Cp - S*Sm], [f*(1j*C*Cp + S*Sm), f*(-1j*S*Cm - C*Sp)]])
 @njit
 def T_gmzi(p, s):
     # MZICrossingGeneric
@@ -59,9 +65,12 @@ def T_gmzi(p, s):
 def T_gmzi_o(p, s):
     # MZICrossingGenericOutPhase
     return T_gmzi(p, s).T[::-1,::-1]
-T[MZICrossing] = T_mzi
-T[MZICrossingOutPhase] = T_mzi_o
-T[MZICrossingGeneric] = T_gmzi
+
+T[MZICrossing]                = T_mzi
+T[MZICrossingOutPhase]        = T_mzi_o
+T[MZICrossing3]               = T_mzi
+T[MZICrossing3OutPhase]       = T_mzi_o
+T[MZICrossingGeneric]         = T_gmzi
 T[MZICrossingGenericOutPhase] = T_gmzi_o
 
 # Minimize f(x, y) = |A + B e^ix + C e^iy + D e^i(x+y)| by line search.
@@ -76,20 +85,24 @@ def linesearch(A, B, C, D, n, sign):
 
 # Iterative (theta, phi) optimization to solve: <a|T(theta, phi)|b> = c.  JITted to speed up the for loop.
 @njit
-def Tsolve_abc_mzi(p_splitter, a, b, c, n, sign):
-    # MZICrossing
-    (Ca, Cb) = np.cos(p_splitter + np.pi/4); (Sa, Sb) = np.sin(p_splitter + np.pi/4)
-    (a1p, a2p) = (a[0]*Cb + 1j*a[1]*Sb, a[1]*Cb + 1j*a[0]*Sb); (b1, b2) = b
+def Tsolve_abc_mzi(sp, a, b, c, n, sign):
+    # MZICrossing, MZICrossing3
+    (Ca, Cb) = np.cos(sp[:2] + np.pi/4); (Sa, Sb) = np.sin(sp[:2] + np.pi/4)
+    (a1p, a2p) = (a[0]*Cb + 1j*a[1]*Sb, a[1]*Cb + 1j*a[0]*Sb)
+    if len(sp) == 3: (Sc, Cc) = (np.sin(sp[2]), np.cos(sp[2])); (b1, b2) = (b[0]*Cc + 1j*b[1]*Sc, b[1]*Cc + 1j*b[0]*Sc)
+    else: (b1, b2) = b
     A =     a2p*b2*Ca - c
     B =  1j*a1p*b2*Sa
     C =  1j*a2p*b1*Sa
     D =     a1p*b1*Ca
     return linesearch(A, B, C, D, n, sign)
 @njit
-def Tsolve_abc_mzi_o(p_splitter, a, b, c, n, sign):
-    # MZICrossingOutPhase
-    (Ca, Cb) = np.cos(p_splitter + np.pi/4); (Sa, Sb) = np.sin(p_splitter + np.pi/4)
-    (a1, a2) = a; (b1p, b2p) = (b[0]*Ca + 1j*b[1]*Sa, b[1]*Ca + 1j*b[0]*Sa)
+def Tsolve_abc_mzi_o(sp, a, b, c, n, sign):
+    # MZICrossingOutPhase, MZICrossing3OutPhase
+    (Ca, Cb) = np.cos(sp[:2] + np.pi/4); (Sa, Sb) = np.sin(sp[:2] + np.pi/4)
+    (b1p, b2p) = (b[0]*Ca + 1j*b[1]*Sa, b[1]*Ca + 1j*b[0]*Sa)
+    if len(sp) == 3: (Sc, Cc) = (np.sin(sp[2]), np.cos(sp[2])); (a1, a2) = (a[0]*Cc + 1j*a[1]*Sc, a[1]*Cc + 1j*a[0]*Sc)
+    else: (a1, a2) = a
     A =  1j*a1*b2p*Sb - c
     B =     a1*b1p*Cb
     C =     a2*b2p*Cb
@@ -111,9 +124,12 @@ def Tsolve_abc_gmzi_o(p_splitter, a, b, c, n, sign):
     # MZICrossingGenericOutPhase
     # Easy since T_out = T^tr[::-1, ::-1], so <a|T_out|b> = [b2,b1]*T*[a2,a1]
     return Tsolve_abc_gmzi(p_splitter, b[::-1], a[::-1], c, n, sign)
-Tsolve_abc[MZICrossing] = Tsolve_abc_mzi
-Tsolve_abc[MZICrossingOutPhase] = Tsolve_abc_mzi_o
-Tsolve_abc[MZICrossingGeneric] = Tsolve_abc_gmzi
+
+Tsolve_abc[MZICrossing]                = Tsolve_abc_mzi
+Tsolve_abc[MZICrossingOutPhase]        = Tsolve_abc_mzi_o
+Tsolve_abc[MZICrossing3]               = Tsolve_abc_mzi
+Tsolve_abc[MZICrossing3OutPhase]       = Tsolve_abc_mzi_o
+Tsolve_abc[MZICrossingGeneric]         = Tsolve_abc_gmzi
 Tsolve_abc[MZICrossingGenericOutPhase] = Tsolve_abc_gmzi_o
 
 # Optimization to solve T(theta, phi)[0, 0] = T
@@ -157,9 +173,15 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     VdV = np.eye(N, dtype=np.complex); WWd = np.eye(N, dtype=np.complex); Z = np.eye(N, dtype=np.complex)
     p = []; ind = []; c = []
     for m in [m1, m2]:
-        m.phi_out[:] = 0
-        m.p_crossing[:, 0] = 0; m.p_crossing[:, 1] = 2*np.pi*np.random.rand(m.n_cr); Z = m.dot(Z)
-        p.append(m.p_splitter*np.ones([m.n_cr, m.X.n_splitter])); ind.append(np.array(m.inds)); c.append(m.p_crossing)
+        m.phi_out[:] = 0; sp = m.p_splitter*np.ones([m.n_cr, m.X.n_splitter])
+        if (type(m.X) in [MZICrossing, MZICrossingOutPhase]):
+            m.p_crossing[:, 0] = 0; m.p_crossing[:, 1] = 2*np.pi*np.random.rand(m.n_cr);
+        elif (type(m.X) == MZICrossing3) and (m.n_cr > 0):
+            m.p_crossing[:] = np.array(m.X.Tsolve((1e-15, 1.), 'T1:', sp.T)[0]).T
+        elif (type(m.X) == MZICrossing3OutPhase) and (m.n_cr > 0):
+            m.p_crossing[:] = np.array(m.X.Tsolve((1., 1e-15), 'T:2', sp.T)[0]).T
+
+        Z = m.dot(Z); p.append(sp); ind.append(np.array(m.inds)); c.append(m.p_crossing)
 
     (i, j, x, y, r) = np.concatenate([np.array(ijxyp(np.repeat(m, nn(m)), np.arange(nn(m)))) for m in range(nm)], 1)
     [[i1, s1], [i2, s2]] = [map(np.array, [m.inds, m.shifts]) for m in [m1, m2]]
@@ -169,6 +191,7 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
 
     #print (np.array([i, j, x, y, ind, r]).T)
     #print (U.shape); print (VdV.shape); print (WWd.shape)
+    #print (np.round(np.abs(Z), 2))
     ijzp = np.array([i, j, ind, r]).T; rand = np.random.randint(0, 2, len(ijzp))*2 - 1
     diagHelper = get_diagHelper(type(m1.X), type(m2.X))
     diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand, improved, sigp)

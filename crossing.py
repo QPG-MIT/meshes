@@ -14,6 +14,7 @@
 #   04/07/21: Slight speedup using numpy.einsum for dot(), rdot(), grad().
 #   04/13/21: Replaced 2*theta -> theta in phase shifters for consistency in notation.
 #   07/25/22: Added functionality to Crossing.grad() needed to speed up JIT'ed mesh VJP function.
+#   08/27/22: Improved support for the 3-MZI.
 
 import numpy as np
 from typing import Any, Tuple
@@ -380,23 +381,15 @@ class SymCrossing(Crossing):
                          [1j*C*C_2a, np.exp(-1j*phi)*(S - 1j*C*S_2a)]])
 
 
-class MZICrossing3(Crossing):
+class MZICrossing3Base(Crossing):
     _X: Crossing
+    _out: bool
     @property
-    def n_phase(self) -> int:
-        return 2
+    def n_phase(self) -> int: return 2
     @property
-    def n_splitter(self) -> int:
-        return 3
+    def n_splitter(self) -> int: return 3
     @property
-    def tunable_indices(self) -> Tuple:
-        return ('T1:',)
-
-    def __init__(self):
-        r"""
-        Class implementing a 3-MZI crossing, p_phase=(theta, phi), p_splitter=(alpha, beta, gamma).
-        """
-        self._X = MZICrossing()
+    def tunable_indices(self) -> Tuple: return () if self._out else ('T1:',)   # TODO -- comfigure OutPhase too...
 
     def _get_beta(self, p_splitter):
         return (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*3)
@@ -405,15 +398,47 @@ class MZICrossing3(Crossing):
         sp = self._get_beta(p_splitter)
         ((T11, T12), (T21, T22)) = self._X.T(p_phase, sp[:2].T); eta = sp[2]
         s11 = s22 = np.cos(eta); s12 = s21 = 1j*np.sin(eta)
-        return np.array([[T11*s11 + T12*s21,  T11*s12 + T12*s22],
-                         [T21*s11 + T22*s21,  T21*s12 + T22*s22]])
+        if self._out:
+            return np.array([[s11*T11 + s12*T21,  s11*T12 + s12*T22],
+                             [s21*T11 + s22*T21,  s21*T12 + s22*T22]])   # s.dot(T)
+        else:
+            return np.array([[T11*s11 + T12*s21,  T11*s12 + T12*s22],
+                             [T21*s11 + T22*s21,  T21*s12 + T22*s22]])   # T.dot(s)
 
+class MZICrossing3(MZICrossing3Base):
+    def __init__(self):
+        r"""
+        Class implementing the 3-MZI crossing and variants:
+        -->--| eta |--[phi]--| (pi/4   |--[theta]--| (pi/4  |-->--
+        -->--|     |---------|  alpha) |-----------|  beta) |-->--
+        Here p_phase = (theta, phi) and p_splitter = (alpha, beta, eta).
+        """
+        self._X = MZICrossing(); self._out = False
     def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
         sp = self._get_beta(p_splitter).T; eta = sp[2]
         if (ind == 'T1:'):
             (T11, T12) = (T[0], T[1]); s = T11/T12
             s = (s - 1j*np.tan(eta)) / (1 - 1j*np.tan(eta)*s)
             return self._X.Tsolve((s, s*0 + 1), ind, sp[:2])
+    def flip(self) -> Crossing:
+        return MZICrossing3OutPhase()
+class MZICrossing3OutPhase(MZICrossing3Base):
+    def __init__(self):
+        r"""
+        Class implementing the 3-MZI crossing and variants:
+        -->--| (pi/4   |--[theta]--| (pi/4  |---------| eta |-->--
+        -->--|  alpha) |-----------|  beta) |--[phi]--|     |-->--
+        Here p_phase = (theta, phi) and p_splitter = (alpha, beta, eta).
+        """
+        self._X = MZICrossingOutPhase(); self._out = True
+    def Tsolve(self, T, ind, p_splitter: Any=0.) -> Tuple[Tuple, int]:
+        sp = self._get_beta(p_splitter).T; eta = sp[2]
+        if (ind == 'T:2'):
+            (T11, T12) = (T[0], T[1]); s = T11/T12
+            s = (s - 1j*np.tan(eta)) / (1 - 1j*np.tan(eta)*s)
+            return self._X.Tsolve((s, s*0 + 1), ind, sp[:2])
+    def flip(self) -> Crossing:
+        return MZICrossing3()
 
 
 class MZICrossingGeneric(Crossing):

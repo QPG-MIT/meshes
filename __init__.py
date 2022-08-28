@@ -26,6 +26,7 @@
 #   05/20/21: Added CUDA code for butterfly networks (FFT mesh).
 #   04/27/22: Added code for 3-MZI and MZI+X Riemann-sphere method.  JIT'ed mesh.dot() to speed up MVM.
 #   07/25/22: JIT'ed mesh.dot_vjp(), added module meshes.jax for JAX compatibility.
+#   08/27/22: Improved support for 3-MZI.
 
 from .crossing import Crossing, MZICrossing, SymCrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
