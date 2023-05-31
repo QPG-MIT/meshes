@@ -209,8 +209,8 @@ class MZICrossing(Crossing):
         r"""
         Class implementing the conventional MZI crossing:
         -->--[phi]--| (pi/4    |--[theta]--| (pi/4   |-->--
-        -->---------|  +beta') |-----------|  +beta) |-->--
-        Here p_phase = (theta, phi) and p_splitter = (beta, beta').
+        -->---------|  +alpha) |-----------|  +beta) |-->--
+        Here p_phase = (theta, phi) and p_splitter = (alpha, beta).
         """
         pass
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
@@ -293,9 +293,9 @@ class MZICrossingBalanced(MZICrossing):
     def __init__(self):
         r"""
         Class implementing the symmetric MZI crossing:
-        -->--[phi]--| (pi/4    |--[+theta/2]--| (pi/4   |-->--
-        -->---------|  +beta') |--[-theta/2]--|  +beta) |-->--
-        Here p_phase = (theta, phi) and p_splitter = (beta, beta').
+        -->--[phi]--| (pi/4    |--[+theta/2]--| (pi/4  |-->--
+        -->---------|  +alpha) |--[-theta/2]--|  beta) |-->--
+        Here p_phase = (theta, phi) and p_splitter = (alpha, beta).
         """
         pass
     def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
@@ -319,9 +319,9 @@ class MZICrossingOutPhase(MZICrossing):
     def __init__(self):
         r"""
         Class implementing the MZI crossing with phase shifter on the output:
-        -->--| (pi/4    |--[theta]--| (pi/4   |--------->--
-        -->--|  +beta') |-----------|  +beta) |--[phi]-->--
-        Here p_phase = (theta, phi) and p_splitter = (beta, beta').
+        -->--| (pi/4    |--[theta]--| (pi/4  |--------->--
+        -->--|  +alpha) |-----------|  beta) |--[phi]-->--
+        Here p_phase = (theta, phi) and p_splitter = (alpha, beta).
         """
         pass
     def _p_splitter(self, p_splitter):
@@ -566,3 +566,37 @@ class CartesianCrossing(Crossing):
         else:
             raise NotImplementedError(ind)  # TODO -- fill in the cases I'm too lazy to implement...
         return ((x, y), err)
+
+class MZICrossingBell(Crossing):
+    def __init__(self):
+        r"""
+        Class implementing the compressed (Bell 2021) MZI crossing:
+        -->----| (pi/4    |--[theta]--| (pi/4   |-->--
+        -->----|  +alpha) |--[phi]----|  +beta) |-->--
+        Here p_phase = (theta, phi) and p_splitter = (alpha, beta).
+        """
+        pass
+    @property
+    def n_phase(self) -> int:
+        return 2
+    @property
+    def n_splitter(self) -> int:
+        return 2
+    @property
+    def tunable_indices(self) -> Tuple:
+        return ()  # TODO -- not essential, but could implement this.
+    def flip(self) -> Crossing:
+        return MZICrossingBell()
+    def T(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        (theta, phi) = np.array(p_phase).T
+        (a, b) = (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2)
+        (Cp, Cm, C, Sp, Sm, S) = [fn(x) for fn in [np.cos, np.sin] for x in [a+b, a-b, (theta-phi)/2]]
+        return np.exp(1j*(theta+phi)/2) * np.array([[-C*Sp + 1j*Cm*S, -Sm*S + 1j*Cp*C],
+                                                    [ Sm*S + 1j*Cp*C, -C*Sp - 1j*Cm*S]])
+    def dT(self, p_phase, p_splitter: Any=0.) -> np.ndarray:
+        (theta, phi) = np.array(p_phase).T
+        (a, b) = (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*2)
+        (Cp, Cm, Sp, Sm) = [fn(x) for fn in [np.cos, np.sin] for x in [a+b, a-b]];
+        (Eth, Eph) = (np.exp(1j*theta), np.exp(1j*phi))
+        return 0.5 * np.array([[[ 1j*Eth*(Cm - Sp), -Eth*(Cp + Sm)], [Eth*(-Cp + Sm), -1j*Eth*(Cm + Sp)]],
+                               [[-1j*Eph*(Cm + Sp), Eph*(-Cp + Sm)], [-Eph*(Cp + Sm),  1j*Eph*(Cm - Sp)]]])

@@ -8,22 +8,19 @@
 #   07/09/20: Moved to this file.  Created classes SquareNetwork, SquareNetworkMZI.
 #   12/10/20: Added Ratio Method tuning strategy for SquareNet and the associated Reck.
 #   03/06/21: Harmonized notation with other modules.  Support for fast JIT-ed direct and diagonalization routines.
+#   05/30/23: Simplified using the new ClippedNetwork class.
 
 import numpy as np
 from scipy.linalg import eigvalsh
 from numpy.linalg import cholesky
 from typing import Any, Tuple
 from .crossing import Crossing, MZICrossing
-from .mesh import MeshNetwork, StructuredMeshNetwork
+from .mesh import MeshNetwork, StructuredMeshNetwork, ClippedNetwork
 from .configure import diag, direct
 
-class SquareNetwork(MeshNetwork):
-    full: StructuredMeshNetwork
-    phi_pos: str
-    _M: int
-    _N: int
-    _out: bool
-    X: Crossing
+
+class SquareNetwork(ClippedNetwork):
+    fact = 1.0
 
     def __init__(self,
                  p_crossing: Any=0.,
@@ -50,23 +47,17 @@ class SquareNetwork(MeshNetwork):
         :param phi_pos: Position of phase shifts: 'in' or 'out'.
         """
         assert (N is not None) + (M is not None) + (shape is not None) == 1
-        if (M is not None) and (M.dtype != np.complex): M = M.astype(np.complex)        
+        if (M is not None) and (M.dtype != complex): M = M.astype(complex)
         if (shape is None): shape = (N, N) if (N is not None) else M.shape
         out = (phi_pos == 'out')
         p_splitter = np.zeros((np.prod(shape), X.n_splitter)) + np.array(p_splitter)
         p_crossing = np.zeros((np.prod(shape), X.n_phase   )) + np.array(p_crossing)
         phi_out = np.concatenate([np.zeros((shape[1-out],)) + phi_out, np.zeros((shape[out],))])
-
         shifts = np.abs(np.arange(-shape[1]+1, shape[0])); lens = (sum(shape) - shifts - shifts[::-1])//2
 
-        super(SquareNetwork, self).__init__()
-        self.full = StructuredMeshNetwork(sum(shape), list(lens), list(shifts), p_splitter=p_splitter,
-                                  p_crossing=p_crossing, phi_out=phi_out, X=X if out else X.flip(), phi_pos=phi_pos)
-        (self._M, self._N) = shape; self._out = out
-        self.p_phase = self.full.p_phase[:p_crossing.size+shape[1-out]]
-        self.p_splitter = self.full.p_splitter
-        self.phi_pos = phi_pos
-        self.X = self.full.X
+        full = StructuredMeshNetwork(sum(shape), list(lens), list(shifts), p_splitter=p_splitter,
+                                     p_crossing=p_crossing, phi_out=phi_out, X=X if out else X.flip(), phi_pos=phi_pos)
+        super(SquareNetwork, self).__init__(full, slice(shape[1]), slice(shape[0]))
 
         if (M is not None):
             if (method in ['diag', 'diag*']):
@@ -76,44 +67,6 @@ class SquareNetwork(MeshNetwork):
             else:
                 raise NotImplementedError(method)  # TODO -- program matrix.
 
-    @property
-    def L(self) -> int:
-        return self.M + self.N - 1
-    @property
-    def M(self) -> int:
-        return self._M
-    @property
-    def N(self) -> int:
-        return self._N
-    @property
-    def p_crossing(self) -> np.ndarray:
-        return self.full.p_crossing
-    @p_crossing.setter
-    def p_crossing(self, x):
-        self.p_crossing[:] = x
-    @property
-    def phi_out(self) -> np.ndarray:
-        return self.full.phi_out[:-self.N if self._out else -self.M]
-    @phi_out.setter
-    def phi_out(self, x):
-        self.phi_out[:] = x
-
-    def _fullphase(self, p_phase):
-        if p_phase is None: return None
-        out = np.zeros([self.full.p_phase.shape]); out[:-self.shape[self._out]] = p_phase
-        return out
-
-    def dot(self, v, p_phase=None, p_splitter=None) -> np.ndarray:
-        r"""
-        Computes the dot product between the splitter and a vector v.
-        :param v: Input vector / matrix.
-        :param p_phase: Phase parameters.  Defaults to stored values.
-        :param p_splitter: Splitter angle parameters (deviation from pi/4).  Defaults to stored values.
-        :return: Output vector / matrix.
-        """
-        v = np.pad(v, [(0, self.M)]+[(0, 0)]*(v.ndim-1))
-        w = self.full.dot(v, p_phase=self._fullphase(p_phase), p_splitter=p_splitter)
-        return np.array(w[:self.M])
 
 def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9, improved=True):
     r"""
@@ -124,13 +77,13 @@ def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9, improved=True):
     :param improved: Whether to use improved diagonalization method (better results for imperfect error correction).
     :return:
     """
-    M11 = M; (M, N) = M11.shape; assert (m.shape == M11.shape); out = (m.phi_pos == 'out')
+    M11 = np.array(M); (M, N) = M11.shape; assert (m.shape == M11.shape); out = (m.phi_pos == 'out')
 
     if out:
         # Set up U = [[M, M']], where MM* + (M')(M'*) = 1
         MMt = M11.dot(M11.conj().T); fact = np.sqrt(eig / eigvalsh(MMt, subset_by_index=[M-1, M-1])[0]) if eig else 1.0
-        MMt *= fact**2; M11 *= fact; M12 = cholesky(np.eye(M) - MMt)
-        U = np.zeros([M+N, M+N], dtype=np.complex); U[:M, :N] = M11; U[:M, N:] = M12
+        MMt *= fact**2; M11 *= fact; M12 = cholesky(np.eye(M) - MMt); m.fact = fact
+        U = np.zeros([M+N, M+N], dtype=complex); U[:M, :N] = M11; U[:M, N:] = M12
         # Call the subroutine that self-configures meshes by matrix diagonalization.
         def nn_sq(m): return N
         def ijxyp_sq(m, n): return [m, N+m-n, m+n, N-1+m-n, m*0]
@@ -138,8 +91,8 @@ def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9, improved=True):
     else:
         # Set up U = [[M], [M']], where M*M + (M'*)(M') = 1
         MtM = M11.T.conj().dot(M11); fact = np.sqrt(eig / eigvalsh(MtM, subset_by_index=[N-1, N-1])[0]) if eig else 1.0
-        MtM *= fact**2; M11 *= fact; M21 = cholesky(np.eye(N) - MtM).T.conj()
-        U = np.zeros([M+N, M+N], dtype=np.complex); U[:M, :N] = M11; U[M:, :N] = M21
+        MtM *= fact**2; M11 *= fact; M21 = cholesky(np.eye(N) - MtM).T.conj(); m.fact = fact
+        U = np.zeros([M+N, M+N], dtype=complex); U[:M, :N] = M11; U[M:, :N] = M21
         # Call the subroutine that self-configures meshes by matrix diagonalization.
         def nn_sq(m): return M
         def ijxyp_sq(m, n): return [M+m-n, m, -m-n, M-1-n+m, m*0+1]
@@ -154,6 +107,5 @@ def directSquare(m: SquareNetwork, M: np.ndarray, eig=0.9):
     :return:
     """
     fact = np.sqrt(eig / eigvalsh(M.dot(M.conj().T), subset_by_index=[M.shape[0]-1, M.shape[0]-1])[0]) if eig else 1.0
-    m = m.full
-    M *= fact; U = np.zeros([m.N, m.N], dtype=np.complex); U[:M.shape[0], :M.shape[1]] = M
-    direct(m, U, 'down')
+    m.fact = fact; M = M * fact; U = np.zeros([m.full.N, m.full.N], dtype=complex); U[:M.shape[0], :M.shape[1]] = M
+    direct(m.full, U, 'down')

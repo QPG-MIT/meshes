@@ -1,5 +1,5 @@
 # Meshes package.
-# Ryan Hamerly, 4/27/22
+# Ryan Hamerly, 5/30/23
 #
 # Implements the MeshNetwork class, which can be used for describing Reck and Clements meshes (or any other
 # beamsplitter mesh where couplings occur between neighboring waveguides).  Clements decomposition is also
@@ -27,6 +27,7 @@
 #   04/27/22: Added code for 3-MZI and MZI+X Riemann-sphere method.  JIT'ed mesh.dot() to speed up MVM.
 #   07/25/22: JIT'ed mesh.dot_vjp(), added module meshes.jax for JAX compatibility.
 #   08/27/22: Improved support for 3-MZI.
+#   05/30/23: Added BiClements, PILOSS, and SVD meshes, simplified Square and QR mesh code.
 
 from .crossing import Crossing, MZICrossing, SymCrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork

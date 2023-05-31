@@ -15,6 +15,7 @@
 #   04/12/21: Forward differentiation support.
 #   04/27/22: JIT'ed mesh.dot() to speed up matrix-vector multiplication.
 #   07/25/22: JIT'ed mesh.dot_vjp() (formerly grad_phi()) to speed up VJP, streamline JAX differentiation.
+#   05/30/23: Added ClippedNetwork class and support for indexing a MeshNetwork class.
 
 
 import numpy as np
@@ -173,6 +174,17 @@ class MeshNetwork:
         warnings.warn("Function grad_phi_target() is deprecated, use grad_L2() instead.")
         return self.grad_L2(U_target, p_phase, p_splitter)
 
+    def __getitem__(self, item) -> 'ClippedNetwork':
+        if (type(item) == tuple):
+            if len(item) != 2:
+                raise IndexError(f"Too many indices: {len(item)}, should be 1 or 2.")
+            (idx_out, idx_in) = item
+        else:
+            (idx_out, idx_in) = (item, slice(None, None, None))
+        if type(idx_in ) != slice: idx_in  = np.asarray(idx_in )
+        if type(idx_out) != slice: idx_out = np.asarray(idx_out)
+        return ClippedNetwork(self, idx_in, idx_out)
+
 
 class StructuredMeshNetwork(MeshNetwork):
     _N: int
@@ -310,8 +322,9 @@ class StructuredMeshNetwork(MeshNetwork):
             dv = (v*0 if (dv is None) else np.array(dv, dtype=complex, order="C")); dv = dv.reshape(sh_f)
             dp = np.zeros([self.n_phase]) if (dp is None) else dp; dph = dp[self.n_cr*self.X.n_phase:]
             dp_cr = dp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
-            dT = np.einsum('ijkl,li->jkl', self.X.dT(p_crossing, p_splitter), dp_cr)
-            if self.L: meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, 0)     # <-- JIT'ed for speed
+            #dT = np.einsum('ijkl,li->jkl', self.X.dT(p_crossing, p_splitter), dp_cr)
+            dT = np.einsum('ijkl,li->jkl', self.X.dT(p_cr, p_sp), dp_cr)
+            if self.L: meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, 1)     # <-- JIT'ed for speed
             return (v.reshape(sh), dv.reshape(sh))
 
     def _L2norm_fn(self, J):
@@ -521,6 +534,7 @@ class StructuredMeshNetwork(MeshNetwork):
         return MeshNetworkGPU(self.N, self.L, np.array(self.lens), np.array(self.shifts),
                               p, s, X, phi_pos='out', is_phase=self.is_phase)
 
+
 def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
     r"""
     A general Ratio Method to calibrate an arbitrarily shaped triangular mesh.
@@ -613,3 +627,73 @@ def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
 class IdentityNetwork(StructuredMeshNetwork):
     def __init__(self, N: int, X: Crossing=MZICrossing(), phi_pos='out'):
         super(IdentityNetwork, self).__init__(N, [], [], 0., 0., X=X, phi_pos=phi_pos)
+
+
+class ClippedNetwork(MeshNetwork):
+    full: MeshNetwork
+    _M: int
+    _N: int
+    idx_in: Any
+    idx_out: Any
+
+    @property
+    def L(self) -> int:
+        return self.full.L
+    @property
+    def M(self) -> int:
+        return self._M
+    @property
+    def N(self) -> int:
+        return self._N
+
+    # These methods require a StructuredMeshNetwork base class, which is usually the case, so they're implemented here.
+    @property
+    def X(self) -> Crossing:
+        assert isinstance(self.full, StructuredMeshNetwork)
+        return self.full.X
+    @property
+    def p_crossing(self) -> np.ndarray:
+        assert isinstance(self.full, StructuredMeshNetwork)
+        return self.full.p_crossing
+    @p_crossing.setter
+    def p_crossing(self, x):
+        assert isinstance(self.full, StructuredMeshNetwork)
+        self.p_crossing[:] = x
+    @property
+    def phi_out(self) -> np.ndarray:
+        assert isinstance(self.full, StructuredMeshNetwork)
+        return self.full.phi_out[self.idx_out if (self.phi_pos == 'out') else self.idx_in]
+    @phi_out.setter
+    def phi_out(self, x):
+        assert isinstance(self.full, StructuredMeshNetwork)
+        self.full.phi_out[self.idx_out if (self.phi_pos == 'out') else self.idx_in] = x
+    @property
+    def phi_pos(self):
+        assert isinstance(self.full, StructuredMeshNetwork)
+        return self.full.phi_pos
+
+    def __init__(self, full: MeshNetwork, idx_in, idx_out):
+        r"""
+        A MeshNetwork where only a fraction (idx_in, idx_out) of the inputs and outputs are accessible.  This class can
+        be instantiated by indexing a MeshNetwork class, i.e. mesh[idx_out, idx_in].
+        :param full: The mesh to be clipped.
+        :param idx_in: [array | list | slice | None] Input ports
+        :param idx_out: [array | list | slice | None] Output ports
+        """
+        self.full = full
+        idx_in  = slice(None, None, None) if (idx_in  is None) else idx_in
+        idx_out = slice(None, None, None) if (idx_out is None) else idx_out
+        self._N = len(idx_in  if ('__len__' in type(idx_in ).__dict__) else np.arange(full.N)[idx_in ])
+        self._M = len(idx_out if ('__len__' in type(idx_out).__dict__) else np.arange(full.M)[idx_out])
+        self.idx_in  = idx_in
+        self.idx_out = idx_out
+        self.p_phase    = full.p_phase
+        self.p_splitter = full.p_splitter
+
+    def dot(self, v, p_phase=None, p_splitter=None) -> np.ndarray:
+        if (type(self.idx_in) == slice and self.idx_in == slice(None)):
+            V = v
+        else:
+            V = np.zeros((self.full.N,) + v.shape[1:])
+            V[self.idx_in] = v
+        return self.full.dot(V)[self.idx_out]

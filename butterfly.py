@@ -5,9 +5,11 @@
 #
 # History
 #   03/22/21: Created ButterflyNetwork class.
+#   11/04/22: Improved stability of decomposition, added option to permute singular values.
 
 import numpy as np
 from numpy.linalg import svd
+from scipy.linalg import cossin
 from .mesh import StructuredMeshNetwork
 from .crossing import Crossing, MZICrossing
 
@@ -20,7 +22,8 @@ class ButterflyNetwork(StructuredMeshNetwork):
                  phi_out:    np.ndarray=None,
                  M:          np.ndarray=None,
                  X:          Crossing=MZICrossing(),
-                 phi_pos:    str='out'):
+                 phi_pos:    str='out',
+                 order:      bool=True):
         r"""
         Mesh based on the generalized FFT butterfly fractal.  This mesh has layers of nonlocal crossings (stride 2^k).
         As a result, the distribution of splitting angles is not tightly concentrated near the cross state as in the
@@ -59,11 +62,19 @@ class ButterflyNetwork(StructuredMeshNetwork):
                 N = len(U)
                 if (N > 2):
                     (U11, U12, U21, U22) = (U[:N//2, :N//2], U[:N//2, N//2:], U[N//2:, :N//2], U[N//2:, N//2:])
-                    (V1, D11, W1) = svd(U11); (V2, D22, W2) = svd(U22)
-                    Dij[0, 0, N//2-1, :] = D11; Dij[0, 1, N//2-1, :] = np.diag(V1.T.conj().dot(U12).dot(W2.T.conj()))
-                    Dij[1, 1, N//2-1, :] = D22; Dij[1, 0, N//2-1, :] = np.diag(V2.T.conj().dot(U21).dot(W1.T.conj()))
+                    (V, D, W) = cossin([U11, U12, U21, U22])
+                    p = np.arange(N//2) if order else np.argsort(np.random.randn(N//2))
+                    V1 = V[:N//2, p]; V2 = V[N//2:, p+N//2]; W1 = W[p, :N//2]; W2 = W[p+N//2, N//2:]
+                    D11 = D[p, p]; D12 = D[p, p+N//2]; D21 = D[p+N//2, p]; D22 = D[p+N//2, p+N//2]
+                    Dij[0, 0, N//2-1, :] = D11; Dij[0, 1, N//2-1, :] = D12
+                    Dij[1, 0, N//2-1, :] = D21; Dij[1, 1, N//2-1, :] = D22
+
                     configButterfly(W1, Dij[:, :, :N//2, :N//4]); configButterfly(W2, Dij[:, :, :N//2, N//4:])
                     configButterfly(V1, Dij[:, :, N//2:, :N//4]); configButterfly(V2, Dij[:, :, N//2:, N//4:])
+
+                    D = np.block([[np.diag(D11), np.diag(D12)], [np.diag(D21), np.diag(D22)]])
+                    V = np.block([[V1, V1*0], [V2*0, V2]]); W = np.block([[W1, W1*0], [W2*0, W2]])
+                    err = np.linalg.norm(V @ D @ W - U)
                 else:
                     Dij[:, :, 0, 0] = U
             Dij = np.zeros([2, 2, N-1, N//2], dtype=np.complex); configButterfly(M, Dij)
@@ -77,4 +88,5 @@ class ButterflyNetwork(StructuredMeshNetwork):
                 phi_out[:] = phi_out[p1]
                 Dij[:, 0, i, :] *= np.exp(1j*phi_out[::2]); Dij[:, 1, i, :] *= np.exp(1j*phi_out[1::2])
                 p_crossing[i] = np.array(self.X.Tsolve((Dij[0, 0, i], Dij[0, 1, i]), 'T1:')[:1])[0].T
-                phi_out[:] = np.angle(Dij[:, :, i]/self.X.T(p_crossing[i]))[:, 0, :].T.flatten()[p2]
+                #phi_out[:] = np.angle(Dij[:, :, i]/self.X.T(p_crossing[i]))[:, 0, :].T.flatten()[p2]
+                phi_out[:] = (np.angle(Dij[:, :, i]) - np.angle(self.X.T(p_crossing[i])))[:, 0, :].T.flatten()[p2]

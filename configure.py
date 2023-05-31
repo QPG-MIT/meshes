@@ -17,7 +17,7 @@ from numba import njit
 from typing import Callable, Union
 from .mesh import MeshNetwork, StructuredMeshNetwork, IdentityNetwork
 from .crossing import MZICrossing, MZICrossingOutPhase, MZICrossing3, MZICrossing3OutPhase, \
-    MZICrossingGeneric, MZICrossingGenericOutPhase
+    MZICrossingGeneric, MZICrossingGenericOutPhase, MZICrossingBell
 
 
 T = dict()
@@ -26,14 +26,14 @@ Tsolve_11 = dict()
 diagHelper = dict()
 directHelper = dict()
 
-@njit
+@njit(cache=True)
 def inv_2x2(M):
     detM = M[0,0]*M[1,1] - M[0,1]*M[1,0]
     return np.array([[ M[1,1], -M[0,1]],
                      [-M[1,0],  M[0,0]]]) / detM
 
 # Numba-accelerated functions for T(theta, phi).
-@njit
+@njit(cache=True)
 def T_mzi(p, s):
     # MZICrossing
     if (len(s) == 3):
@@ -42,7 +42,7 @@ def T_mzi(p, s):
     (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
     (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi); t = np.exp(1j*theta/2)
     return t * np.array([[f*(1j*S*Cm - C*Sp), 1j*C*Cp - S*Sm], [f*(1j*C*Cp + S*Sm), -1j*S*Cm - C*Sp]])
-@njit
+@njit(cache=True)
 def T_mzi_o(p, s):
     # MZICrossingOutPhase
     if (len(s) == 3):
@@ -51,7 +51,7 @@ def T_mzi_o(p, s):
     (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], theta/2])
     (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); f = np.exp(1j*phi); t = np.exp(1j*theta/2)
     return t * np.array([[1j*S*Cm - C*Sp, 1j*C*Cp - S*Sm], [f*(1j*C*Cp + S*Sm), f*(-1j*S*Cm - C*Sp)]])
-@njit
+@njit(cache=True)
 def T_gmzi(p, s):
     # MZICrossingGeneric
     (t_theta, t_phi) = np.exp(1j*p); (t11, t21, t12, t22) = np.exp(1j*(s[2:6] + s[6:10]) + s[10:14]/2)
@@ -61,10 +61,17 @@ def T_gmzi(p, s):
     U21 = 1j*t11*Sa*t_phi;  U22 =    t21*Ca;  V21 = 1j*t12*Sb*t_theta;  V22 =    t22*Cb
     return np.array([[V11*U11 + V12*U21, V11*U12 + V12*U22],
                      [V21*U11 + V22*U21, V21*U12 + V22*U22]])
-@njit
+@njit(cache=True)
 def T_gmzi_o(p, s):
     # MZICrossingGenericOutPhase
     return T_gmzi(p, s).T[::-1,::-1]
+@njit(cache=True)
+def T_bell(p, s):
+    # Symmetric (Bell) Crossing
+    (theta, phi) = p; psi = np.array([s[0]+s[1], s[0]-s[1], (theta-phi)/2])
+    (Cp, Cm, C) = np.cos(psi); (Sp, Sm, S) = np.sin(psi); t = np.exp(1j*(theta+phi)/2)
+    return t * np.array([[-C*Sp + 1j*Cm*S, -Sm*S + 1j*Cp*C], [Sm*S + 1j*Cp*C, -C*Sp - 1j*Cm*S]])
+
 
 T[MZICrossing]                = T_mzi
 T[MZICrossingOutPhase]        = T_mzi_o
@@ -72,9 +79,10 @@ T[MZICrossing3]               = T_mzi
 T[MZICrossing3OutPhase]       = T_mzi_o
 T[MZICrossingGeneric]         = T_gmzi
 T[MZICrossingGenericOutPhase] = T_gmzi_o
+T[MZICrossingBell]            = T_bell
 
 # Minimize f(x, y) = |A + B e^ix + C e^iy + D e^i(x+y)| by line search.
-@njit
+@njit(cache=True)
 def linesearch(A, B, C, D, n, sign):
     (theta, phi) = (np.pi/2*sign, 0)
     for i in range(n):
@@ -84,7 +92,7 @@ def linesearch(A, B, C, D, n, sign):
     return np.array([theta, phi])
 
 # Iterative (theta, phi) optimization to solve: <a|T(theta, phi)|b> = c.  JITted to speed up the for loop.
-@njit
+@njit(cache=True)
 def Tsolve_abc_mzi(sp, a, b, c, n, sign):
     # MZICrossing, MZICrossing3
     (Ca, Cb) = np.cos(sp[:2] + np.pi/4); (Sa, Sb) = np.sin(sp[:2] + np.pi/4)
@@ -96,7 +104,7 @@ def Tsolve_abc_mzi(sp, a, b, c, n, sign):
     C =  1j*a2p*b1*Sa
     D =     a1p*b1*Ca
     return linesearch(A, B, C, D, n, sign)
-@njit
+@njit(cache=True)
 def Tsolve_abc_mzi_o(sp, a, b, c, n, sign):
     # MZICrossingOutPhase, MZICrossing3OutPhase
     (Ca, Cb) = np.cos(sp[:2] + np.pi/4); (Sa, Sb) = np.sin(sp[:2] + np.pi/4)
@@ -108,7 +116,7 @@ def Tsolve_abc_mzi_o(sp, a, b, c, n, sign):
     C =     a2*b2p*Cb
     D =  1j*a2*b1p*Sb
     return linesearch(A, B, C, D, n, sign)
-@njit
+@njit(cache=True)
 def Tsolve_abc_gmzi(p_splitter, a, b, c, n, sign):
     # MZICrossingGeneric
     (t11, t21, t12, t22) = np.exp(1j*(p_splitter[2:6] + p_splitter[6:10]) + p_splitter[10:14]/2)
@@ -119,11 +127,26 @@ def Tsolve_abc_gmzi(p_splitter, a, b, c, n, sign):
     C =  1j*a2p*b1p*Sa
     D =     a1p*b1p*Ca
     return linesearch(A, B, C, D, n, sign)
-@njit
+@njit(cache=True)
 def Tsolve_abc_gmzi_o(p_splitter, a, b, c, n, sign):
     # MZICrossingGenericOutPhase
     # Easy since T_out = T^tr[::-1, ::-1], so <a|T_out|b> = [b2,b1]*T*[a2,a1]
     return Tsolve_abc_gmzi(p_splitter, b[::-1], a[::-1], c, n, sign)
+@njit(cache=True)
+def Tsolve_abc_bell(sp, a, b, c, n, sign):
+    # MZICrossingBell
+    (Ca, Cb) = np.cos(sp + np.pi/4); (Sa, Sb) = np.sin(sp + np.pi/4)
+    (a1p, a2p) = (a[0]*Cb + 1j*a[1]*Sb, a[1]*Cb + 1j*a[0]*Sb)
+    (b1p, b2p) = (b[0]*Ca + 1j*b[1]*Sa, b[1]*Ca + 1j*b[0]*Sa)
+    A = -c; B = a1p*b1p; C = a2p*b2p
+    # Solve A + B e^ix + C e^iy = 0, or find best approximate (x, y).  This can be done analytically.
+    (absA, absB, absC) = (np.abs(A), np.abs(B), np.abs(C))
+    cos_q = (absA**2 - absB**2 - absC**2) / (2*absB*absC)
+    if   (cos_q >= +1): z = np.angle(B) - np.angle(C)
+    elif (cos_q <= -1): z = np.angle(B) - np.angle(C) + np.pi
+    else:               z = np.angle(B) - np.angle(C) + sign*np.arccos(cos_q)
+    BC = B + C*np.exp(1j*z); theta = np.angle(-A) - np.angle(BC); phi = theta + z
+    return np.array([theta, phi])
 
 Tsolve_abc[MZICrossing]                = Tsolve_abc_mzi
 Tsolve_abc[MZICrossingOutPhase]        = Tsolve_abc_mzi_o
@@ -131,9 +154,10 @@ Tsolve_abc[MZICrossing3]               = Tsolve_abc_mzi
 Tsolve_abc[MZICrossing3OutPhase]       = Tsolve_abc_mzi_o
 Tsolve_abc[MZICrossingGeneric]         = Tsolve_abc_gmzi
 Tsolve_abc[MZICrossingGenericOutPhase] = Tsolve_abc_gmzi_o
+Tsolve_abc[MZICrossingBell]            = Tsolve_abc_bell
 
 # Optimization to solve T(theta, phi)[0, 0] = T
-@njit
+@njit(cache=True)
 def Tsolve_11_mzi(T, p_splitter):
     (alpha, beta) = p_splitter
     Cp = np.cos(alpha+beta); Cm = np.cos(alpha-beta); Sp = np.sin(alpha+beta); Sm = np.sin(alpha-beta)
@@ -149,7 +173,8 @@ Tsolve_11[MZICrossingOutPhase] = Tsolve_11_mzi
 
 
 def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork, None],
-         phi_diag: np.ndarray, U: np.ndarray, nm: int, nn: Callable, ijxyp: Callable, improved: bool, sigp: float=0.):
+         phi_diag: np.ndarray, U: np.ndarray, nm: int, nn: Callable, ijxyp: Callable,
+         improved: bool, sigp: float=0., rand: bool=True):
     r"""
     Calibrates a beamsplitter mesh using the diagonalization method, detailed in my note.
     Accelerated by Numba JIT.
@@ -192,7 +217,8 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     #print (np.array([i, j, x, y, ind, r]).T)
     #print (U.shape); print (VdV.shape); print (WWd.shape)
     #print (np.round(np.abs(Z), 2))
-    ijzp = np.array([i, j, ind, r]).T; rand = np.random.randint(0, 2, len(ijzp))*2 - 1
+    ijzp = np.array([i, j, ind, r]).T;
+    rand = (np.random.randint(0, 2, len(ijzp))*2 - 1) if rand else (np.ones(len(ijzp), dtype=int))
     diagHelper = get_diagHelper(type(m1.X), type(m2.X))
     diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand, improved, sigp)
     phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
@@ -257,7 +283,7 @@ def get_diagHelper(type_i, type_o):
                 #X[i1:i1+2, :] = T.conj().T.dot(X[i1:i1+2, :])
             #print ((i, j), ':', ind, p)#, ' *'[err_i])
             #print ((np.abs(X) > 1e-6).astype(int))
-    diagHelper_fn = njit(diagHelper_fn)
+    diagHelper_fn = njit(diagHelper_fn, cache=True)
     diagHelper[type_i] = diagHelper_fn
     return diagHelper_fn
 
@@ -337,7 +363,7 @@ def get_directHelper(type):
             Upost[:, ind+1] *= np.exp(1j*phi)
             for (ind, T) in zip(pos_i[:, 2], Tlist[len(pos_i)-1::-1]):
                 Upost[:, ind:ind+2] = Upost[:, ind:ind+2].dot(T)   # Multiply Upost by diagonal's T.
-    directHelper_fn = njit(directHelper_fn)
+    directHelper_fn = njit(directHelper_fn, cache=True)
     directHelper[type] = directHelper_fn
     return directHelper_fn
 
