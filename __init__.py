@@ -28,6 +28,7 @@
 #   07/25/22: JIT'ed mesh.dot_vjp(), added module meshes.jax for JAX compatibility.
 #   08/27/22: Improved support for 3-MZI.
 #   05/30/23: Added BiClements, PILOSS, and SVD meshes, simplified Square and QR mesh code.
+#   09/01/23: Converted meshes.meshdot_helper to C code and added OpenMP support, runs up to 20x faster.
 
 from .crossing import Crossing, MZICrossing, SymCrossing, CartesianCrossing
 from .mesh import MeshNetwork, StructuredMeshNetwork
@@ -35,6 +36,9 @@ from .reck import ReckNetwork
 from .clements import ClementsNetwork, SymClementsNetwork
 from .square import SquareNetwork
 from .qr import QRNetwork
+from .svd import SVDNetwork
+from .biclements import BiClementsNetwork
+from .piloss import PilossNetwork
 from .butterfly import ButterflyNetwork
 from .configure import errcorr_local
 

@@ -16,16 +16,18 @@
 #   04/27/22: JIT'ed mesh.dot() to speed up matrix-vector multiplication.
 #   07/25/22: JIT'ed mesh.dot_vjp() (formerly grad_phi()) to speed up VJP, streamline JAX differentiation.
 #   05/30/23: Added ClippedNetwork class and support for indexing a MeshNetwork class.
+#   09/01/23: Converted meshdot_helper to C code and added OpenMP support, runs up to 20x faster.
 
 
 import numpy as np
 import warnings
 from typing import List, Any, Tuple, Callable
 from numba import njit
+from ctypes import c_int, c_float, c_double, c_void_p, CDLL
 from .crossing import Crossing, MZICrossing, MZICrossingOutPhase, SymCrossing
 
 @njit
-def meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, mode):
+def meshdot_helper_nb(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, mode):
     is_fd = (mode == 1); is_bd = (mode == 2); tr = int(is_bd); #is_diff = (dT.size != 0);
     if is_bd: pos = 1-pos; T[:] = T.conj(); ph[:] = -ph;
     is_perm = (perms.size != 0); L = len(lens); (i, j) = (tr, 1-tr)
@@ -72,6 +74,43 @@ def meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, mode):
         if is_fd: dv[:] = dv*T_ph + 1j*v*dph.reshape((len(ph),1))
         if is_bd: dv[:] = dv*T_ph; dph[:] = np.real(-1j*dv*v.conj()).sum(-1)
     if is_bd: ph[:] = -ph
+
+OMP_THREADS = 'auto'
+
+try:
+    dot_c = CDLL("/".join(__file__.split("/")[:-1] + ["c", "dot.so"]))
+    meshdot_helper32 = dot_c.meshdot_helper32; meshdot_helper64 = dot_c.meshdot_helper64
+    for h in [meshdot_helper32, meshdot_helper64]:
+        h.argtypes = (c_int, c_int, c_int, c_int,
+                      c_void_p, c_void_p, c_void_p, c_void_p, c_void_p, c_void_p,
+                      c_void_p, c_void_p, c_void_p, c_void_p, c_int, c_int, c_int, c_int)
+    HAS_C_CODE = True
+    BACKEND = "c"
+except OSError:
+    print ("C code in meshes/c not compiled (run makefile to compile), falling back to Numba.")
+    HAS_C_CODE = False
+    BACKEND = "numba"
+
+def meshdot_helper_c(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, mode):
+    is64 = np.any([X.dtype == np.complex128 for X in [T, dT, ph, dph, v, dv]])
+    N = v.shape[0]; B = v.size//N
+    (ftype, ctype, fn) = [(np.float32, np.complex64, meshdot_helper32),
+                          (np.float64, np.complex128, meshdot_helper64)][int(is64)]
+    (T_, dT_, v_, dv_) = (np.asarray(X, dtype=ctype, order="C") for X in [T, dT, v, dv])
+    (ph_, dph_) = (np.asarray(X, dtype=ftype, order="C") for X in [ph, dph])
+    (inds_, lens_, shifts_, perms_) = (np.asarray(X, dtype=np.int32) for X in [inds, lens, shifts, perms])
+
+    # Hack that works on a Mac :)
+    threads = max(1, int(np.round(np.sqrt(N*B)/64, 0))) if OMP_THREADS == 'auto' else OMP_THREADS
+
+    fn(c_int(N), c_int(B), c_int(T.shape[2]), c_int(len(lens)),
+       T_.ctypes, dT_.ctypes, ph_.ctypes, dph_.ctypes, v_.ctypes, dv_.ctypes, inds_.ctypes, lens_.ctypes,
+       shifts_.ctypes, perms_.ctypes, c_int(perms.size), c_int(pos), c_int(mode), c_int(threads))
+    for (X_, X) in zip([T_, dT_, ph_, dph_, v_, dv_], [T, dT, ph, dph, v, dv]):
+        if (X_.ctypes.data != X.ctypes.data): X[:] = X_
+
+meshdot_helper = {"c": meshdot_helper_c, "numba": meshdot_helper_nb}
+
 
 # The base class MeshNetwork.
 
@@ -315,7 +354,7 @@ class StructuredMeshNetwork(MeshNetwork):
         if (dp is None) and (dv is None):
             # Propagate fields only
             dT = np.empty((0,0,0), complex); dv = np.empty((0,0), complex); dph = np.empty((0,), float)
-            if self.L: meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, 0)     # <-- JIT'ed for speed
+            if self.L: meshdot_helper[BACKEND](T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, 0) # <-- Fast!
             return v.reshape(sh)
         else:
             # Propagate fields and gradients
@@ -324,7 +363,7 @@ class StructuredMeshNetwork(MeshNetwork):
             dp_cr = dp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
             #dT = np.einsum('ijkl,li->jkl', self.X.dT(p_crossing, p_splitter), dp_cr)
             dT = np.einsum('ijkl,li->jkl', self.X.dT(p_cr, p_sp), dp_cr)
-            if self.L: meshdot_helper(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, 1)     # <-- JIT'ed for speed
+            if self.L: meshdot_helper[BACKEND](T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, 1) # <-- Fast!
             return (v.reshape(sh), dv.reshape(sh))
 
     def _L2norm_fn(self, J):
@@ -345,7 +384,7 @@ class StructuredMeshNetwork(MeshNetwork):
         dJdp_cr = dJdp[:self.n_cr*self.X.n_phase].reshape([self.n_cr, self.X.n_phase])
 
         T = np.ascontiguousarray(self.X.T(p_cr, p_sp)); dJdT = T*0
-        if self.L: meshdot_helper(T, dJdT, ph, dJdph, v, dJdv, inds, lens, shifts, perms_bk, pos, 2)  # <-- JIT'ed fn
+        if self.L: meshdot_helper[BACKEND](T, dJdT, ph, dJdph, v, dJdv, inds, lens, shifts, perms_bk, pos, 2) # <- Fast!
         dJdp_cr[:] = self.X.grad(p_cr, p_sp, gradT=dJdT.transpose(2, 0, 1))
         return (dJdp, dJdv)
 
