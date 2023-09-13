@@ -235,52 +235,73 @@ def get_diagHelper(type_i, type_o):
     T_o = T[type_o];  Tsolve_abc_o = Tsolve_abc[type_o]
 
     def diagHelper_fn(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand, improved, sigp):
+        U_tr = U; WWd_tr = WWd; Z_tr = Z  # Inplace storage of transpose mat.T (improve cache hits on the 2x2 matmul's)
+
         #X = np.array(U)
+        p_prev = 1
         for k in range(len(ijzp)):
             (i, j, ind, p) = ijzp[k]  # (i, j): element to zero.  ind: MZI index.  p: 0 (left mesh) or 1 (right mesh)
             upper = (i < j)           # (i, j) in upper triangle
             if (p == 0):
-                j1 = (j-1 if upper else j); (u, v) = U[i, j1:j1+2]
+                if (p != p_prev):
+                    if not improved: WWd_tr[:] = WWd.T
+                    Z_tr[:] = Z.T; U_tr[:] = U.T; p_prev = p
+
+                j1 = (j-1 if upper else j); (u, v) = U_tr[j1:j1+2, i] #U[i, j1:j1+2]
                 if (u == 0. and v == 0.): (u, v) = (1.+0.j, 0.+0.j) if upper else (0.+0.j, 1.+0.j)
                 T0dag = np.array([[v, u.conjugate()], [-u, v.conjugate()]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
                 if upper: T0dag[:, :] = T0dag[:, ::-1]
-                Z[:, j1:j1+2] = Z[:, j1:j1+2].dot(inv_2x2(T_i(c1[ind], p1[ind])))
-                wj = WWd[:, j1:j1+2].dot(T0dag[:, j-j1])
-                vi = VdV[i, :].dot(Z)
-                res = wj.dot(vi) - wj[j1:j1+2].dot(vi[j1:j1+2])
-                c1[ind] = Tsolve_abc_i(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, rand[k])
+                Z_tr[j1:j1+2, :] = inv_2x2(T_i(c1[ind], p1[ind])).T @ Z_tr[j1:j1+2, :]
+                #Z[:, j1:j1+2] = Z[:, j1:j1+2] @ inv_2x2(T_i(c1[ind], p1[ind]))
+                if improved:
+                    wj2 = T0dag[:, j-j1]; vi2 = Z_tr[j1:j1+2, i]  # Simplified since VdV = WWd = I
+                    c1[ind] = Tsolve_abc_i(p1[ind], vi2, wj2, 0., 10, rand[k])
+                else:
+                    wj = T0dag[:, j-j1].T @ WWd_tr[j1:j1+2, :] #wj = WWd[:, j1:j1+2] @ T0dag[:, j-j1]
+                    vi = Z_tr @ VdV[i, :] #vi = VdV[i, :] @ Z
+                    res = wj @ vi - wj[j1:j1+2] @ vi[j1:j1+2]
+                    c1[ind] = Tsolve_abc_i(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, rand[k])
                 c1[ind] += np.random.randn(2)*sigp
                 T = T_i(c1[ind], p1[ind])
                 if improved:
-                    U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T.T.conj())
-                    #WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T.T.conj())  # (these cancel out)
-                    #WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
+                    U_tr[j1:j1+2, :] = T.conj() @ U_tr[j1:j1+2, :]    # U[:, j1:j1+2]   = U[:, j1:j1+2] @ T.T.conj()
+                    #WWd[:, j1:j1+2] = WWd[:, j1:j1+2] @ T.T.conj()   # (these cancel out)
+                    #WWd[j1:j1+2, :] = T @ WWd[j1:j1+2, :]
                 else:
-                    U[:, j1:j1+2]   = U[:, j1:j1+2].dot(T0dag)
-                    WWd[:, j1:j1+2] = WWd[:, j1:j1+2].dot(T0dag)
-                    WWd[j1:j1+2, :] = T.dot(WWd[j1:j1+2, :])
-                #X[:, j1:j1+2] = X[:, j1:j1+2].dot(T.conj().T)
+                    U_tr[j1:j1+2, :] = T0dag.T @ U_tr[j1:j1+2, :]     # U[:, j1:j1+2]   = U[:, j1:j1+2] @ T0dag
+                    WWd_tr[j1:j1+2, :] = T0dag.T @ WWd_tr[j1:j1+2, :] # WWd[:, j1:j1+2] = WWd[:, j1:j1+2] @ T0dag
+                    WWd_tr[:, j1:j1+2] = WWd_tr[:, j1:j1+2] @ T.T     # WWd[j1:j1+2, :] = T @ WWd[j1:j1+2, :]
+                #X[:, j1:j1+2] = X[:, j1:j1+2] @ T.conj().T
+
             else:
+                if (p != p_prev):
+                    if not improved: WWd[:] = WWd_tr.T
+                    Z[:] = Z_tr.T; U[:] = U_tr.T; p_prev = p
+
                 i1 = (i if upper else i-1); (u, v) = U[i1:i1+2, j]
                 if (u == 0. and v == 0.): (u, v) = (0.+0.j, 1.+0.j) if upper else (1.+0.j, 0.+0.j)
                 T0dag = np.array([[u.conjugate(), v.conjugate()], [ v, -u]]) / np.sqrt(u*u.conjugate() + v*v.conjugate())
                 if upper: T0dag[:, :] = T0dag[::-1, :]
-                Z[i1:i1+2, :] = inv_2x2(T_o(c2[ind], p2[ind])).dot(Z[i1:i1+2, :])
-                wj = Z.dot(WWd[:, j])
-                vi = T0dag[i-i1, :].dot(VdV[i1:i1+2, :])
-                res = wj.dot(vi) - wj[i1:i1+2].dot(vi[i1:i1+2])
-                c2[ind] = Tsolve_abc_o(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, rand[k])
+                Z[i1:i1+2, :] = inv_2x2(T_o(c2[ind], p2[ind])) @ Z[i1:i1+2, :]
+                if improved:
+                    wj2 = Z[i1:i1+2, j]; vi2 = T0dag[i-i1, :]  # Simplified since VdV = WWd = I
+                    c2[ind] = Tsolve_abc_o(p2[ind], vi2, wj2, 0., 10, rand[k])
+                else:
+                    wj = Z @ WWd[:, j]
+                    vi = T0dag[i-i1, :] @ VdV[i1:i1+2, :]
+                    res = wj @ vi - wj[i1:i1+2] @ vi[i1:i1+2]
+                    c2[ind] = Tsolve_abc_o(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, rand[k])
                 c2[ind] += np.random.randn(2)*sigp
                 T = T_o(c2[ind], p2[ind])
                 if improved:
-                    U[i1:i1+2, :]   = T.T.conj().dot(U[i1:i1+2, :])
-                    #VdV[i1:i1+2, :] = T.T.conj().dot(VdV[i1:i1+2, :])  # (these cancel out)
-                    #VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
+                    U[i1:i1+2, :]   = T.T.conj() @ U[i1:i1+2, :]
+                    #VdV[i1:i1+2, :] = T.T.conj() @ VdV[i1:i1+2, :]  # (these cancel out)
+                    #VdV[:, i1:i1+2] = VdV[:, i1:i1+2] @ T
                 else:
-                    U[i1:i1+2, :]   = T0dag.dot(U[i1:i1+2, :])
-                    VdV[i1:i1+2, :] = T0dag.dot(VdV[i1:i1+2, :])
-                    VdV[:, i1:i1+2] = VdV[:, i1:i1+2].dot(T)
-                #X[i1:i1+2, :] = T.conj().T.dot(X[i1:i1+2, :])
+                    U[i1:i1+2, :]   = T0dag @ U[i1:i1+2, :]
+                    VdV[i1:i1+2, :] = T0dag @ VdV[i1:i1+2, :]
+                    VdV[:, i1:i1+2] = VdV[:, i1:i1+2] @ T
+                #X[i1:i1+2, :] = T.conj().T @ X[i1:i1+2, :]
             #print ((i, j), ':', ind, p)#, ' *'[err_i])
             #print ((np.abs(X) > 1e-6).astype(int))
     diagHelper_fn = njit(diagHelper_fn, cache=True)

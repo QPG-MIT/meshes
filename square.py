@@ -67,6 +67,8 @@ class SquareNetwork(ClippedNetwork):
             else:
                 raise NotImplementedError(method)  # TODO -- program matrix.
 
+    full: StructuredMeshNetwork
+
 
 def diagSquare(m: SquareNetwork, M: np.ndarray, eig=0.9, improved=True):
     r"""
