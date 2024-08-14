@@ -26,18 +26,18 @@ void merge(real *dest, real *src_r, real *src_i, int ct)
 }
 
 template <class real>
-void permute(int N, int B, bool diff, int *perms, real *v_r, real *v_i, real *dv_r, real *dv_i, real *temp)
+void permute(int N, int B, int dl, bool diff, int *perms, real *v_r, real *v_i, real *dv_r, real *dv_i, real *temp)
 {
-    for (int k = 0; k < N; k++) {memcpy(temp + B*k, v_r + B*perms[k], B*sizeof(real));}
-    for (int k = 0; k < N; k++) {memcpy(v_r + B*k, temp + B*k, B*sizeof(real));}
-    for (int k = 0; k < N; k++) {memcpy(temp + B*k, v_i + B*perms[k], B*sizeof(real));}
-    for (int k = 0; k < N; k++) {memcpy(v_i + B*k, temp + B*k, B*sizeof(real));}
+    for (int k = 0; k < N; k++) {memcpy(temp + B*k, v_r  + B*perms[k], dl*sizeof(real));}
+    for (int k = 0; k < N; k++) {memcpy(v_r  + B*k, temp + B*k,        dl*sizeof(real));}
+    for (int k = 0; k < N; k++) {memcpy(temp + B*k, v_i  + B*perms[k], dl*sizeof(real));}
+    for (int k = 0; k < N; k++) {memcpy(v_i  + B*k, temp + B*k,        dl*sizeof(real));}
     if (diff)
     {
-        for (int k = 0; k < N; k++) {memcpy(temp + B*k, dv_r + B*perms[k], B*sizeof(real));}
-        for (int k = 0; k < N; k++) {memcpy(dv_r + B*k, temp + B*k, B*sizeof(real));}
-        for (int k = 0; k < N; k++) {memcpy(temp + B*k, dv_i + B*perms[k], B*sizeof(real));}
-        for (int k = 0; k < N; k++) {memcpy(dv_i + B*k, temp + B*k, B*sizeof(real));}
+        for (int k = 0; k < N; k++) {memcpy(temp + B*k, dv_r + B*perms[k], dl*sizeof(real));}
+        for (int k = 0; k < N; k++) {memcpy(dv_r + B*k, temp + B*k,        dl*sizeof(real));}
+        for (int k = 0; k < N; k++) {memcpy(temp + B*k, dv_i + B*perms[k], dl*sizeof(real));}
+        for (int k = 0; k < N; k++) {memcpy(dv_i + B*k, temp + B*k,        dl*sizeof(real));}
     }
 }
 
@@ -148,7 +148,7 @@ void meshdot_helper(int N, int B, int nT, int L,
                 int i1 = inds[n], l_n = lens[n], s = shifts[n], i2 = i1+l_n;
 
                 if (is_perm)
-                    permute(N, dl, is_fd || is_bd, perms+(n+int(is_bd))*N,
+                    permute(N, B, dl, is_fd || is_bd, perms+(n+int(is_bd))*N,
                             v_r, v_i, dv_r, dv_i, temp_v);
                     // p = perms[n + int(is_bd)]; v_r[:] = v_r[p]; v_i[:] = v_i[p]
                     // if is_fd or is_bd: dv_r[:] = dv_r[p]; dv_i[:] = dv_i[p]
@@ -287,7 +287,7 @@ void meshdot_helper(int N, int B, int nT, int L,
             }
 
             if (is_perm)
-                permute(N, dl, is_fd || is_bd, perms+(is_bd ? 0 : L)*N,
+                permute(N, B, dl, is_fd || is_bd, perms+(is_bd ? 0 : L)*N,
                         v_r, v_i, dv_r, dv_i, temp_v);
                 // p = perms[0 if is_bd else L]; v_r[:] = v_r[p]; v_i[:] = v_i[p]
                 // if is_fd or is_bd: dv_r[:] = dv_r[p]; dv_i[:] = dv_i[p]

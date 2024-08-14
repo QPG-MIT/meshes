@@ -78,6 +78,7 @@ def meshdot_helper_nb(T, dT, ph, dph, v, dv, inds, lens, shifts, perms, pos, mod
 OMP_THREADS = 'auto'
 
 try:
+    # raise OSError("Force numba")
     dot_c = CDLL("/".join(__file__.split("/")[:-1] + ["c", "dot.so"]))
     meshdot_helper32 = dot_c.meshdot_helper32; meshdot_helper64 = dot_c.meshdot_helper64
     for h in [meshdot_helper32, meshdot_helper64]:
@@ -133,7 +134,7 @@ class MeshNetwork:
     @property
     def N(self) -> int:
         r"""
-        Output dimension of the mesh network.  Thus, self.matrix().shape == (self.M, self.N)
+        Input dimension of the mesh network.  Thus, self.matrix().shape == (self.M, self.N)
         """
         raise NotImplementedError()
     @property
@@ -141,7 +142,7 @@ class MeshNetwork:
         r"""
         Number of phase degrees of freedom (due to crossings plus phase screen)
         """
-        return len(p_phase)
+        return len(self.p_phase)
     @property
     def shape(self) -> Tuple[int, int]:
         r"""
@@ -200,7 +201,7 @@ class MeshNetwork:
         :return:
         """
         J = [0]; f = self._L2norm_fn(J)
-        v = self.dot(U_target.T.conj()); dJdv = f(v)
+        v = self.dot(U_target.T.conj(), p_phase=p_phase, p_splitter=p_splitter); dJdv = f(v)
         dJdp = self.dot_vjp(v, dJdv, p_phase, p_splitter)[0]
         return (J[0], dJdp)
 
@@ -729,10 +730,27 @@ class ClippedNetwork(MeshNetwork):
         self.p_phase    = full.p_phase
         self.p_splitter = full.p_splitter
 
+    def _to_full(self, v, pos):
+        idx = {'in': self.idx_in, 'out': self.idx_out}[pos]
+        if (type(idx) == slice and idx == slice(None)): return v
+        else: V = np.zeros((self.full.N,) + v.shape[1:], dtype=complex); V[idx] = v; return V
+
     def dot(self, v, p_phase=None, p_splitter=None) -> np.ndarray:
-        if (type(self.idx_in) == slice and self.idx_in == slice(None)):
-            V = v
-        else:
-            V = np.zeros((self.full.N,) + v.shape[1:])
-            V[self.idx_in] = v
-        return self.full.dot(V)[self.idx_out]
+        V = self._to_full(v, 'in')
+        return self.full.dot(V, p_phase, p_splitter)[self.idx_out]
+
+    def grad_L2(self, U_target, p_phase=None, p_splitter=None) -> Tuple[float, np.ndarray]:
+        r"""
+        Gets the gradient of the L2 norm |U_target^dag * U - 1|^2 with respect to the phase parameters.  If is_phase=False
+        (no phase screen), only takes the norm over off-diagonal elements (phase screen can correct for the diagonal).
+        :param U_target: Target matrix, size (M, N)
+        :param p_phase: Phase parameters (phi_k).  Scalar or vector of size N^2.
+        :param p_splitter: Beamsplitter parameters (beta_k - pi/4).  Scalar of vector of size N(N-1).
+        :return:
+        """
+        J = [0]
+        def f(U): dU = U[self.idx_out] - U_target; J[0] = np.linalg.norm(dU)**2; return self._to_full(2*dU, 'out')
+        U = self.full.dot(self._to_full(np.eye(self.N, dtype=complex), 'in'))
+        dJdp = self.full.dot_vjp(U, f(U), p_phase, p_splitter)[0]
+        return (J[0], dJdp)
+

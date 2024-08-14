@@ -11,6 +11,7 @@
 #   04/13/21: Replaced 2*theta -> theta in phase shifters for consistency in notation.
 #   04/28/21: Generalized diagHelper and associated helper functions.
 #   08/27/22: Added support for 3-MZI.
+#   09/13/22: Performance improvements to the diag* self-configuration method
 
 import numpy as np
 from numba import njit

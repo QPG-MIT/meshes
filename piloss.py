@@ -87,6 +87,8 @@ class PilossNetwork(ClippedNetwork):
             directPilossHelper(N, M_target, U_post, U_pre, sp, ph, perm, k_out, k_in)
 
 
+
+
 directPilossHelper = dict()
 
 # JIT-ed function to perform the iterative direct-method self-configuration.
