@@ -268,7 +268,7 @@ class StructuredMeshNetwork(MeshNetwork):
         self.lens = lens; n_cr = sum(lens)
         self.shifts = shifts
         self.inds = np.cumsum([0] + list(lens)).tolist()
-        self.p_phase = p_phase * np.ones(n_cr*X.n_phase + N*is_phase, dtype=np.float)
+        self.p_phase = p_phase * np.ones(n_cr*X.n_phase + N*is_phase, dtype=float)
         self.p_splitter = np.array(p_splitter)
         self.phi_pos = phi_pos
         self.is_phase = is_phase
@@ -542,7 +542,7 @@ class StructuredMeshNetwork(MeshNetwork):
         :param p_splitter: Splitter imperfections (if any) in the new type.
         :return: A StructuredMeshNetwork object.
         """
-        assert (np.all([p is None for p in self.perm]))  # TODO -- generalize
+        # assert (np.all([p is None for p in self.perm]))  # TODO -- generalize
         phi_out = np.zeros([self.N])
         s_in = self.p_splitter + np.zeros([self.n_cr, self.X.n_splitter])
         p_in = self.p_crossing
@@ -551,9 +551,11 @@ class StructuredMeshNetwork(MeshNetwork):
 
         # Convert each layer and propagate the phases to the right [left].  Merge with output [input] phase screen.
         if (self.phi_pos == 'out'):
-            for (ind, L, s) in zip(self.inds, self.lens, self.shifts):
+            for (ind, L, s, p) in zip(self.inds, self.lens, self.shifts, self.perm):
+                if (p is not None): phi_out[:] = phi_out[p]
                 (p_out[ind:ind+L], phi_out[s:s+2*L]) = self.X.convert(X, p_in[ind:ind+L], s_in[ind:ind+L], s_out[ind:ind+L],
                                                                       phi_out[s:s+2*L], self.phi_pos)
+            if (self.perm[-1] is not None): phi_out[:] = phi_out[self.perm[-1]]
             phi_out += self.phi_out
         else:
             raise NotImplementedError()  # TODO -- generalize to 'in'
