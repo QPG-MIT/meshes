@@ -389,7 +389,7 @@ class MZICrossing3Base(Crossing):
     @property
     def n_splitter(self) -> int: return 3
     @property
-    def tunable_indices(self) -> Tuple: return () if self._out else ('T1:',)   # TODO -- comfigure OutPhase too...
+    def tunable_indices(self) -> Tuple: return () if self._out else ('T1:',)   # TODO -- configure OutPhase too...
 
     def _get_beta(self, p_splitter):
         return (np.array(p_splitter).T if np.iterable(p_splitter) else (p_splitter,)*3)

@@ -1,5 +1,5 @@
 # meshes/mesh.py
-# Ryan Hamerly, 4/27/22
+# Ryan Hamerly, 8/27/24
 #
 # Implements the MeshNetwork class, which can be used for describing Reck and Clements meshes (or any other
 # beamsplitter mesh where couplings occur between neighboring waveguides).  Clements decomposition is also
@@ -17,10 +17,12 @@
 #   07/25/22: JIT'ed mesh.dot_vjp() (formerly grad_phi()) to speed up VJP, streamline JAX differentiation.
 #   05/30/23: Added ClippedNetwork class and support for indexing a MeshNetwork class.
 #   09/01/23: Converted meshdot_helper to C code and added OpenMP support, runs up to 20x faster.
+#   08/27/24: Added visualization tool.
 
 
 import numpy as np
 import warnings
+import matplotlib.pyplot as plt
 from typing import List, Any, Tuple, Callable
 from numba import njit
 from ctypes import c_int, c_float, c_double, c_void_p, CDLL
@@ -575,6 +577,48 @@ class StructuredMeshNetwork(MeshNetwork):
         X = {MZICrossing: 'mzi', SymCrossing: 'sym'}[type(self.X)]
         return MeshNetworkGPU(self.N, self.L, np.array(self.lens), np.array(self.shifts),
                               p, s, X, phi_pos='out', is_phase=self.is_phase)
+
+    def viz(self, func, ax=None, boxes='default', spacing=0.05, **plot_kwargs):
+        r"""
+        Visualizes the mesh.
+        :param func: Function of each MZI to plot.  Can be one of the following:
+            Built-in functions: 'theta', 'phi', 'r'.
+            Callable: func(theta, phi) -> out (must be vectorizable)
+            Tuple: (theta0, phi0).  Plots (|theta - theta0| + |phi - phi0|) / 2
+        :param ax: Axis to plot on
+        :param boxes: Whether to draw boxes around each MZI.  Defaults to only when N <= 32.
+        :param spacing: Spacing between mesh boundaries and edge of plot.
+        :param plot_kwargs: Arguments to plt.imshow()
+        :return: colorbar argument
+        """
+        if (ax is None): ax = plt.gca()
+        if (boxes == 'default'): boxes = (self.N <= 32)
+        kwargs = dict(cmap='bwr', vmin=-np.pi, vmax=np.pi)
+        (o, m, M, r) = (np.outer, np.minimum, np.maximum, np.arange)
+        (N, L, ln, sh) = (self.N, self.L, np.array(self.lens), np.array(self.shifts)); bot = sh + 2 * ln
+        (xlist, ylist) = zip(*[(x, y) for (x, sx, lx) in zip(r(L), sh, ln) for y in r(sx, sx+2*lx, 2)])
+        psi = np.zeros((N, L)) + np.nan
+        (theta, phi) = np.mod(self.p_crossing.T + np.pi, 2 * np.pi) - np.pi
+        if (func == 'theta'): psi_list = theta
+        elif (func == 'phi'): psi_list = phi
+        elif (func == 'r'):
+            psi_list = np.abs(self.X.T(self.p_crossing, self.p_splitter))[0, 0]**2
+            kwargs.update(vmin=0, vmax=1, cmap='plasma_r')
+        elif hasattr(func, '__len__') and len(func) == 2: x0=func; psi_list = (np.abs(theta-x0[0])+np.abs(phi-x0[1]))/2
+        elif callable(func): psi_list = func(theta, phi)
+        else: raise TypeError(func)
+        psi[ylist, xlist] = psi_list; psi[np.abs(ylist)+1, xlist] = psi_list
+        kwargs.update(plot_kwargs)
+        cax = ax.imshow(psi, origin='upper', extent=[0, L, 0, N], aspect='auto', interpolation='nearest', **kwargs)
+        ax.set_xlim(-spacing*L, (1+spacing)*L); ax.set_ylim(-spacing*N, (1+spacing)*N)
+        ax.plot([0, 0], [N-sh[0], N-sh[0]-2*ln[0]], [L, L], [N-sh[-1], N-sh[-1]-2*ln[-1]], c='k', lw=1)
+        ax.set_xticks([]); ax.set_yticks([])
+        if boxes:
+            ax.plot(o(1, xlist) + o([0, 1], 1), N-2-o([1, 1], ylist), o(1, r(L)) + o([0, 1], 1), N-o([1, 1], sh),
+                    o([1, 1], r(1, L)), N - np.array([m(sh[:-1], sh[1:]), M(bot[:-1], bot[1:])]), c='k', lw=1)
+        else:
+            ax.plot((r(2*L)+1)//2, N-o(sh, [1, 1]).flatten(), (r(2*L)+1)//2, N-o(sh+2*ln, [1, 1]).flatten(), c='k', lw=1)
+        return cax
 
 
 def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):

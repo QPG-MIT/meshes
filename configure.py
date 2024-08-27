@@ -218,7 +218,9 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
         elif (type(m.X) == MZICrossing3OutPhase) and (m.n_cr > 0):
             m.p_crossing[:] = np.array(m.X.Tsolve((1., 1e-15), 'T:2', sp.T)[0]).T
 
-        Z = m.dot(Z); p.append(sp); ind.append(np.array(m.inds)); c.append(m.p_crossing)
+    print ("INCOMPLETE!"); return
+
+    Z = m.dot(Z); p.append(sp); ind.append(np.array(m.inds)); c.append(m.p_crossing)
 
     (i, j, x, y, r) = np.concatenate([np.array(ijxyp(np.repeat(m, nn(m)), np.arange(nn(m)))) for m in range(nm)], 1)
     [[i1, s1], [i2, s2]] = [map(np.array, [m.inds, m.shifts]) for m in [m1, m2]]
@@ -226,9 +228,10 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     ind[w1] = i1[x1] + (y1-s1[x1])//2
     ind[w2] = i2[x2] + (y2-s2[x2])//2
 
-    #print (np.array([i, j, x, y, ind, r]).T)
-    #print (U.shape); print (VdV.shape); print (WWd.shape)
-    #print (np.round(np.abs(Z), 2))
+    print (np.array([i, j, x, y, ind, r]).T)
+    print (U.shape); print (VdV.shape); print (WWd.shape)
+    print (np.round(np.abs(Z), 2))
+
     ijzp = np.array([i, j, ind, r]).T;
     (init_p, init_m) = INIT[type(m1.X)]
     if (callable(init)): init = init(x, y)
