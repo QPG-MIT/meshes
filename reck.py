@@ -25,7 +25,7 @@ class ReckNetwork(StructuredMeshNetwork):
                  M: np.ndarray=None,
                  N: int=None,
                  phi_pos='out',
-                 method: str='diag',
+                 method: str='diag*',
                  args=dict()):
         r"""
         Mesh network based on the Reck (triangular) decomposition.

@@ -217,7 +217,7 @@ class SymClementsNetwork(MeshNetwork):
                  p_splitter: np.ndarray=0.,
                  clem: ClementsNetwork=None,
                  X: Crossing=MZICrossing(),
-                 method='ratio',
+                 method='diag*',
                  args=dict()):
         r"""
         Constructs a symmetric Clements network.  This is the product of two triangle meshes with the phase shifts
@@ -226,7 +226,7 @@ class SymClementsNetwork(MeshNetwork):
         :param p_splitter: Splitter imperfections.
         :param clem: If specified, converts a ClementsNetwork to SymClementsNetwork.
         :param X: The crossing type.  Currently only MZICrossing supported.
-        :param method: Calibration method used: 'direct', 'ratio', 'mod', 'new'.
+        :param method: Calibration method used: 'direct', 'ratio', 'mod', 'diag', 'diag*'.
         :param warn: Throws a warning if mesh cannot be calibrated correctly.
         """
         init_clem = (clem is not None)

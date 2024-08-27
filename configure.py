@@ -24,6 +24,7 @@ from .crossing import MZICrossing, MZICrossingOutPhase, MZICrossing3, MZICrossin
 T = dict()
 Tsolve_abc = dict()
 Tsolve_11 = dict()
+INIT = dict()
 diagHelper = dict()
 directHelper = dict()
 
@@ -82,10 +83,11 @@ T[MZICrossingGeneric]         = T_gmzi
 T[MZICrossingGenericOutPhase] = T_gmzi_o
 T[MZICrossingBell]            = T_bell
 
+
 # Minimize f(x, y) = |A + B e^ix + C e^iy + D e^i(x+y)| by line search.
 @njit(cache=True)
-def linesearch(A, B, C, D, n, sign):
-    (theta, phi) = (np.pi/2*sign, 0)
+def linesearch(A, B, C, D, n, init): # sign):
+    (theta, phi) = init # (np.pi/2*sign, 0)
     for i in range(n):
         temp  = np.exp(1j*theta); phi   = np.angle(-(A + temp*B)) - np.angle(C + temp*D)
         temp  = np.exp(1j*phi);   theta = np.angle(-(A + temp*C)) - np.angle(B + temp*D)
@@ -94,7 +96,7 @@ def linesearch(A, B, C, D, n, sign):
 
 # Iterative (theta, phi) optimization to solve: <a|T(theta, phi)|b> = c.  JITted to speed up the for loop.
 @njit(cache=True)
-def Tsolve_abc_mzi(sp, a, b, c, n, sign):
+def Tsolve_abc_mzi(sp, a, b, c, n, init): #, sign):
     # MZICrossing, MZICrossing3
     (Ca, Cb) = np.cos(sp[:2] + np.pi/4); (Sa, Sb) = np.sin(sp[:2] + np.pi/4)
     (a1p, a2p) = (a[0]*Cb + 1j*a[1]*Sb, a[1]*Cb + 1j*a[0]*Sb)
@@ -104,9 +106,9 @@ def Tsolve_abc_mzi(sp, a, b, c, n, sign):
     B =  1j*a1p*b2*Sa
     C =  1j*a2p*b1*Sa
     D =     a1p*b1*Ca
-    return linesearch(A, B, C, D, n, sign)
+    return linesearch(A, B, C, D, n, init) #, sign)
 @njit(cache=True)
-def Tsolve_abc_mzi_o(sp, a, b, c, n, sign):
+def Tsolve_abc_mzi_o(sp, a, b, c, n, init): #, sign):
     # MZICrossingOutPhase, MZICrossing3OutPhase
     (Ca, Cb) = np.cos(sp[:2] + np.pi/4); (Sa, Sb) = np.sin(sp[:2] + np.pi/4)
     (b1p, b2p) = (b[0]*Ca + 1j*b[1]*Sa, b[1]*Ca + 1j*b[0]*Sa)
@@ -116,9 +118,9 @@ def Tsolve_abc_mzi_o(sp, a, b, c, n, sign):
     B =     a1*b1p*Cb
     C =     a2*b2p*Cb
     D =  1j*a2*b1p*Sb
-    return linesearch(A, B, C, D, n, sign)
+    return linesearch(A, B, C, D, n, init) #, sign)
 @njit(cache=True)
-def Tsolve_abc_gmzi(p_splitter, a, b, c, n, sign):
+def Tsolve_abc_gmzi(p_splitter, a, b, c, n, init): #, sign):
     # MZICrossingGeneric
     (t11, t21, t12, t22) = np.exp(1j*(p_splitter[2:6] + p_splitter[6:10]) + p_splitter[10:14]/2)
     (Ca, Cb) = np.cos(p_splitter[:2] + np.pi/4); (Sa, Sb) = np.sin(p_splitter[:2] + np.pi/4)
@@ -127,14 +129,14 @@ def Tsolve_abc_gmzi(p_splitter, a, b, c, n, sign):
     B =  1j*a1p*b2p*Sa
     C =  1j*a2p*b1p*Sa
     D =     a1p*b1p*Ca
-    return linesearch(A, B, C, D, n, sign)
+    return linesearch(A, B, C, D, n, init) #, sign)
 @njit(cache=True)
-def Tsolve_abc_gmzi_o(p_splitter, a, b, c, n, sign):
+def Tsolve_abc_gmzi_o(p_splitter, a, b, c, n, init): #, sign):
     # MZICrossingGenericOutPhase
     # Easy since T_out = T^tr[::-1, ::-1], so <a|T_out|b> = [b2,b1]*T*[a2,a1]
-    return Tsolve_abc_gmzi(p_splitter, b[::-1], a[::-1], c, n, sign)
+    return Tsolve_abc_gmzi(p_splitter, b[::-1], a[::-1], c, n, init) #, sign)
 @njit(cache=True)
-def Tsolve_abc_bell(sp, a, b, c, n, sign):
+def Tsolve_abc_bell(sp, a, b, c, n, init): #, sign):
     # MZICrossingBell
     (Ca, Cb) = np.cos(sp + np.pi/4); (Sa, Sb) = np.sin(sp + np.pi/4)
     (a1p, a2p) = (a[0]*Cb + 1j*a[1]*Sb, a[1]*Cb + 1j*a[0]*Sb)
@@ -145,7 +147,7 @@ def Tsolve_abc_bell(sp, a, b, c, n, sign):
     cos_q = (absA**2 - absB**2 - absC**2) / (2*absB*absC)
     if   (cos_q >= +1): z = np.angle(B) - np.angle(C)
     elif (cos_q <= -1): z = np.angle(B) - np.angle(C) + np.pi
-    else:               z = np.angle(B) - np.angle(C) + sign*np.arccos(cos_q)
+    else:               z = np.angle(B) - np.angle(C) + np.sign(init[0])*np.arccos(cos_q) #sign*np.arccos(cos_q)
     BC = B + C*np.exp(1j*z); theta = np.angle(-A) - np.angle(BC); phi = theta + z
     return np.array([theta, phi])
 
@@ -171,11 +173,20 @@ def Tsolve_11_mzi(T, p_splitter):
 Tsolve_11[MZICrossing] = Tsolve_11_mzi
 Tsolve_11[MZICrossingOutPhase] = Tsolve_11_mzi
 
+INIT[MZICrossing]                = ([np.pi/2, 0], [-np.pi/2, 0])
+INIT[MZICrossingOutPhase]        = ([np.pi/2, 0], [-np.pi/2, 0])
+INIT[MZICrossing3]               = ([np.pi/2, -np.pi/2], [-np.pi/2, np.pi/2])
+INIT[MZICrossing3OutPhase]       = ([np.pi/2, -np.pi/2], [-np.pi/2, np.pi/2])
+INIT[MZICrossingGeneric]         = ([np.pi/2, 0], [-np.pi/2, 0])
+INIT[MZICrossingGenericOutPhase] = ([np.pi/2, 0], [-np.pi/2, 0])
+INIT[MZICrossingBell]            = ([np.pi/2, 0], [-np.pi/2, 0])
 
+
+JIT = True
 
 def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork, None],
          phi_diag: np.ndarray, U: np.ndarray, nm: int, nn: Callable, ijxyp: Callable,
-         improved: bool, sigp: float=0., rand: bool=True):
+         improved: bool, sigp: float=0., init='rand'):
     r"""
     Calibrates a beamsplitter mesh using the diagonalization method, detailed in my note.
     Accelerated by Numba JIT.
@@ -219,9 +230,15 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     #print (U.shape); print (VdV.shape); print (WWd.shape)
     #print (np.round(np.abs(Z), 2))
     ijzp = np.array([i, j, ind, r]).T;
-    rand = (np.random.randint(0, 2, len(ijzp))*2 - 1) if rand else (np.ones(len(ijzp), dtype=int))
+    (init_p, init_m) = INIT[type(m1.X)]
+    if (callable(init)): init = init(x, y)
+    elif (init == 'rand'): init = np.random.randint(0, 2, len(ijzp))
+    elif (init == 'uniform'): init = np.ones(len(ijzp), dtype=int)
+    else: raise ValueError(init)
+    if (init.ndim == 1): init = np.outer(init, init_p) + np.outer(1-init, init_m)
+
     diagHelper = get_diagHelper(type(m1.X), type(m2.X))
-    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, rand, improved, sigp)
+    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, init, improved, sigp)
     phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
 
 # Super-fast Numba JIT-accelerated self-configuration code that implements the matrix diagonalization method.
@@ -235,7 +252,7 @@ def get_diagHelper(type_i, type_o):
     T_i = T[type_i];  Tsolve_abc_i = Tsolve_abc[type_i]
     T_o = T[type_o];  Tsolve_abc_o = Tsolve_abc[type_o]
 
-    def diagHelper_fn(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, rand, improved, sigp):
+    def diagHelper_fn(U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, init, improved, sigp):
         U_tr = U; WWd_tr = WWd; Z_tr = Z  # Inplace storage of transpose mat.T (improve cache hits on the 2x2 matmul's)
 
         #X = np.array(U)
@@ -256,12 +273,12 @@ def get_diagHelper(type_i, type_o):
                 #Z[:, j1:j1+2] = Z[:, j1:j1+2] @ inv_2x2(T_i(c1[ind], p1[ind]))
                 if improved:
                     wj2 = T0dag[:, j-j1]; vi2 = Z_tr[j1:j1+2, i]  # Simplified since VdV = WWd = I
-                    c1[ind] = Tsolve_abc_i(p1[ind], vi2, wj2, 0., 10, rand[k])
+                    c1[ind] = Tsolve_abc_i(p1[ind], vi2, wj2, 0., 10, init[k])
                 else:
                     wj = T0dag[:, j-j1].T @ WWd_tr[j1:j1+2, :] #wj = WWd[:, j1:j1+2] @ T0dag[:, j-j1]
                     vi = Z_tr @ VdV[i, :] #vi = VdV[i, :] @ Z
                     res = wj @ vi - wj[j1:j1+2] @ vi[j1:j1+2]
-                    c1[ind] = Tsolve_abc_i(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, rand[k])
+                    c1[ind] = Tsolve_abc_i(p1[ind], vi[j1:j1+2], wj[j1:j1+2], -res, 10, init[k])
                 c1[ind] += np.random.randn(2)*sigp
                 T = T_i(c1[ind], p1[ind])
                 if improved:
@@ -286,12 +303,12 @@ def get_diagHelper(type_i, type_o):
                 Z[i1:i1+2, :] = inv_2x2(T_o(c2[ind], p2[ind])) @ Z[i1:i1+2, :]
                 if improved:
                     wj2 = Z[i1:i1+2, j]; vi2 = T0dag[i-i1, :]  # Simplified since VdV = WWd = I
-                    c2[ind] = Tsolve_abc_o(p2[ind], vi2, wj2, 0., 10, rand[k])
+                    c2[ind] = Tsolve_abc_o(p2[ind], vi2, wj2, 0., 10, init[k])
                 else:
                     wj = Z @ WWd[:, j]
                     vi = T0dag[i-i1, :] @ VdV[i1:i1+2, :]
                     res = wj @ vi - wj[i1:i1+2] @ vi[i1:i1+2]
-                    c2[ind] = Tsolve_abc_o(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, rand[k])
+                    c2[ind] = Tsolve_abc_o(p2[ind], vi[i1:i1+2], wj[i1:i1+2], -res, 10, init[k])
                 c2[ind] += np.random.randn(2)*sigp
                 T = T_o(c2[ind], p2[ind])
                 if improved:
@@ -305,7 +322,7 @@ def get_diagHelper(type_i, type_o):
                 #X[i1:i1+2, :] = T.conj().T @ X[i1:i1+2, :]
             #print ((i, j), ':', ind, p)#, ' *'[err_i])
             #print ((np.abs(X) > 1e-6).astype(int))
-    diagHelper_fn = njit(diagHelper_fn, cache=True)
+    diagHelper_fn = njit(diagHelper_fn, cache=True) if JIT else diagHelper_fn
     diagHelper[type_i] = diagHelper_fn
     return diagHelper_fn
 
