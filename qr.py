@@ -44,7 +44,7 @@ class QRNetwork(ClippedNetwork):
         """
         assert (N is not None) ^ (M is not None)
         if (M is not None): 
-            if (M.dtype != np.complex): M = M.astype(np.complex)
+            if (M.dtype != complex): M = M.astype(complex)
             N = len(M); assert (M.shape == (N, N))
         out = (phi_pos == 'out')
         p_splitter = np.zeros((N**2, X.n_splitter)) + np.array(p_splitter)
@@ -78,7 +78,7 @@ def diagQR(m: QRNetwork, M: np.ndarray, eig: float=None, improved=False):
     MtM *= fact**2; M = M * fact; L = cholesky(np.eye(N) - MtM[::-1,::-1])[::-1,::-1].T.conj()
     M1 = np.concatenate([L, M], 0); M2 = np.random.randn(2*N, N)
     M2 = qr(qr(np.concatenate([M1, M2], 1))[0][:, N:].T)[1].T
-    U = np.zeros([2*N, 2*N], dtype=np.complex); U[:, ::2] = M1; U[:, 1::2] = M2
+    U = np.zeros([2*N, 2*N], dtype=complex); U[:, ::2] = M1; U[:, 1::2] = M2
 
     if (m.phi_pos == 'out'):
         def nn_qr(m): return min(m+1, 2*N-(m+1))

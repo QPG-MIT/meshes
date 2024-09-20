@@ -371,7 +371,7 @@ class StructuredMeshNetwork(MeshNetwork):
 
     def _L2norm_fn(self, J):
         def f(U):
-            V = U - np.eye(self.N, dtype=np.complex)
+            V = U - np.eye(self.N, dtype=complex)
             if not self.is_phase: V -= np.diag(np.diag(V))
             J[0] = np.linalg.norm(V)**2; return 2*V
         return f
@@ -635,7 +635,7 @@ def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
         mesh.flip(True); calibrateTriangle(mesh, U, 'down', method, warn); mesh.flip(True); return
     assert (diag == 'down') and (mesh.phi_pos == 'in')
     X = {'direct': mesh.X.flip(), 'mod': mesh.X.flip(), 'ratio': mesh.X}[method]
-    N = len(U); Upost = np.eye(N, dtype=np.complex); assert U.shape == (N, N)
+    N = len(U); Upost = np.eye(N, dtype=complex); assert U.shape == (N, N)
 
     # Divide mesh into diagonals.  Make sure each diagonal can be uniquely targeted with a certain input waveguide.
     pos = np.concatenate([[[i, j, 2*j+j0, i-(2*j+j0)]
@@ -656,8 +656,8 @@ def calibrateTriangle(mesh: StructuredMeshNetwork, U, diag, method, warn=False):
         env = np.maximum.accumulate((np.array(mesh.shifts) + np.array(mesh.lens)*2 - 2)[::-1])[::-1]
         Psum = np.cumsum(np.abs(U[::-1]**2), axis=0)[::-1]  # Psum[i, j] = norm(U[i:, j])^2
         for pos_i in pos:
-            E_in = 1.0; Tlist = []; ptr_last = None; l = pos_i[-1, 2]; #v = np.zeros([N], dtype=np.complex)
-            w = np.zeros([N], dtype=np.complex)
+            E_in = 1.0; Tlist = []; ptr_last = None; l = pos_i[-1, 2]; #v = np.zeros([N], dtype=complex)
+            w = np.zeros([N], dtype=complex)
             for (m, (i, j, ind, _)) in enumerate(pos_i[::-1]):  # Adjust MZIs *down* the diagonal one by one.
                 ptr = mesh.inds[i] + j
                 k = outfield[i+ind] if (i+ind in outfield) else ind  # Output index (or two) k:k+dk

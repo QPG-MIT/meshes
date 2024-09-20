@@ -41,7 +41,7 @@ class ButterflyNetwork(StructuredMeshNetwork):
         assert (phi_pos == 'out')   # TODO -- phi_pos='in'
         N = (N if N else len(M))
         assert N == 2**int(np.log2(N))  # Size must be a power of 2.
-        if (M is not None) and (M.dtype != np.complex): M = M.astype(np.complex)
+        if (M is not None) and (M.dtype != complex): M = M.astype(complex)
 
         # Set up the mesh parameters and permutations for crossings with stride s > 1.
         lens = [N//2]*(N-1); shifts = [0]*(N-1); perm = [None]*N
@@ -77,7 +77,7 @@ class ButterflyNetwork(StructuredMeshNetwork):
                     err = np.linalg.norm(V @ D @ W - U)
                 else:
                     Dij[:, :, 0, 0] = U
-            Dij = np.zeros([2, 2, N-1, N//2], dtype=np.complex); configButterfly(M, Dij)
+            Dij = np.zeros([2, 2, N-1, N//2], dtype=complex); configButterfly(M, Dij)
 
             # Convert the crossing amplitudes Dij into phase shifts (theta, phi).
             p_crossing = self.p_crossing.reshape([N-1, N//2, 2]); phi_out = self.phi_out

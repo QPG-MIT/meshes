@@ -364,9 +364,9 @@ def test_cpu_speed():
     print ("Speed Test: meshes/mesh.py (NumPy)")
     print ("--------------------------------------")
     def time_clem(N, B):
-        U  = np.random.randn(N, B).astype(np.complex)
-        dU = np.random.randn(N, B).astype(np.complex)
-        V  = np.random.randn(N, B).astype(np.complex)
+        U  = np.random.randn(N, B).astype(complex)
+        dU = np.random.randn(N, B).astype(complex)
+        V  = np.random.randn(N, B).astype(complex)
         clem = ms.ClementsNetwork(N=N)
         clem.p_splitter = np.random.randn(N*(N-1)//2, 2)
         clem.p_phase[:] = np.random.randn(N**2)

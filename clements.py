@@ -49,7 +49,7 @@ class ClementsNetwork(StructuredMeshNetwork):
             p_crossing = np.array([theta, phi]).T
             phi_out = 2*np.pi*np.random.uniform(0, np.ones(N))[:N*is_phase]
         elif (M is not None): 
-            if (M.dtype != np.complex): M = M.astype(np.complex)
+            if (M.dtype != complex): M = M.astype(complex)
             N = len(M)  # Start by getting N, shifts, lens, p_splitter
         elif (np.iterable(phi_out)): N = len(phi_out)
         else: assert N != None
@@ -233,7 +233,7 @@ class SymClementsNetwork(MeshNetwork):
         assert (M is None) ^ (clem is None)
         assert (method in ['direct', 'ratio', 'mod', 'diag', 'diag*'])
         N = len(M) if (clem is None) else clem.N
-        if (M is not None and M.dtype != np.complex): M = M.astype(np.complex)
+        if (M is not None and M.dtype != complex): M = M.astype(complex)
 
         if (clem is not None):
             # Just split the existing Clements matrix into its triangles.

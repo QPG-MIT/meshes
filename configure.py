@@ -205,9 +205,9 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     assert (m1 is not None) or (m2 is not None)
     if (m1 is None): m1 = IdentityNetwork(m2.N, X=m2.X.flip())
     if (m2 is None): m2 = IdentityNetwork(m1.N, X=m1.X.flip())
-    U = np.array(U, dtype=np.complex, order="C"); N = m1.N; assert (U.shape == (N, N))
+    U = np.array(U, dtype=complex, order="C"); N = m1.N; assert (U.shape == (N, N))
     # (V0)* V and W (W0)*, where V0 is ideal, V is with real components.  Goal: match U = V*W
-    VdV = np.eye(N, dtype=np.complex); WWd = np.eye(N, dtype=np.complex); Z = np.eye(N, dtype=np.complex)
+    VdV = np.eye(N, dtype=complex); WWd = np.eye(N, dtype=complex); Z = np.eye(N, dtype=complex)
     p = []; ind = []; c = []
     for m in [m1, m2]:
         m.phi_out[:] = 0; sp = m.p_splitter*np.ones([m.n_cr, m.X.n_splitter])
@@ -342,7 +342,7 @@ def direct(m: StructuredMeshNetwork, U: np.ndarray, diag: str, dk_max=1):
     if (diag == 'up') and (m.phi_pos == 'out'): m.flip(True); direct(m, U, 'down'); m.flip(True); return
     assert (diag == 'down') and (m.phi_pos == 'in')
     assert isinstance(m.X, MZICrossingOutPhase)
-    N = len(U); Upost = np.eye(N, dtype=np.complex); assert U.shape == (N, N)
+    N = len(U); Upost = np.eye(N, dtype=complex); assert U.shape == (N, N)
     if np.isfortran(U): U = np.array(U, order="C")
 
     # Divide mesh into diagonals.  Make sure each diagonal can be uniquely targeted with a certain input waveguide.
@@ -358,7 +358,7 @@ def direct(m: StructuredMeshNetwork, U: np.ndarray, diag: str, dk_max=1):
     (k, v) = np.array(list(fld.items())).T; of = np.repeat(0, max(2*k)+5); is_of = of*0; of[k] = v; is_of[k] = 1
     env = np.maximum.accumulate((np.array(m.shifts) + np.array(m.lens)*2 - 2)[::-1])[::-1]
     Psum = np.cumsum(np.abs(U[::-1]**2), axis=0)[::-1]  # Psum[i, j] = norm(U[i:, j])^2
-    Tlist = np.zeros([N+5, 2, 2], dtype=np.complex); w = np.zeros([N], dtype=np.complex)
+    Tlist = np.zeros([N+5, 2, 2], dtype=complex); w = np.zeros([N], dtype=complex)
 
     # Numba JIT-accelerated helper function.
     directHelper = get_directHelper(type(m.X))

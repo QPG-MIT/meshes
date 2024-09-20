@@ -40,7 +40,7 @@ class ReckNetwork(StructuredMeshNetwork):
         """
         assert (M is None) ^ (N is None)
         if (M is not None): 
-            if (M.dtype != np.complex): M = M.astype(np.complex)
+            if (M.dtype != complex): M = M.astype(complex)
             N = len(M)  # Start by getting N, shifts, lens, p_splitter
         elif (np.iterable(phi_out)): N = len(phi_out)
         else: assert N != None
