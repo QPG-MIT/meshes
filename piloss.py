@@ -110,8 +110,8 @@ def get_directPilossHelper(type_i):
                 u_pre  = U_pre[:, jj];  b = u_pre[2*n:2*n+2]
                 c = M[i, j] - (u_post @ u_pre - a @ b)
                 # print ((m, n), (i, j), (ii, jj), a, b, c)
-                ph1 = Tsolve_abc_i(sp[m*N+n], a, b, c, 10, +1); T1 = T_i(ph1, sp[m*N+n])
-                ph2 = Tsolve_abc_i(sp[m*N+n], a, b, c, 10, -1); T2 = T_i(ph2, sp[m*N+n])
+                ph1 = Tsolve_abc_i(sp[m*N+n], a, b, c, 10, (+np.pi/2, 0)); T1 = T_i(ph1, sp[m*N+n])
+                ph2 = Tsolve_abc_i(sp[m*N+n], a, b, c, 10, (-np.pi/2, 0)); T2 = T_i(ph2, sp[m*N+n])
                 ph[m*N+n] = ph1 if np.linalg.norm(T1 - Tmn) < np.linalg.norm(T2 - Tmn) else ph2
                 Tmn = T_i(ph[m*N+n], sp[m*N+n])
                 # print (a @ T @ b - c)

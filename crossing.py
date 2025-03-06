@@ -326,7 +326,7 @@ class MZICrossingOutPhase(MZICrossing):
         pass
     def _p_splitter(self, p_splitter):
         # Gets the splitter angles for the flipped MZICrossing element.
-        beta = np.array(p_splitter if np.iterable(p_splitter) else [p_splitter]*2, dtype=np.float).T
+        beta = np.array(p_splitter if np.iterable(p_splitter) else [p_splitter]*2, dtype=float).T
         beta = beta[::-1]; beta[0] += np.pi/2; beta[1] -= np.pi/2; return beta.T
 
     # Based on the identity:

@@ -218,9 +218,7 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
         elif (type(m.X) == MZICrossing3OutPhase) and (m.n_cr > 0):
             m.p_crossing[:] = np.array(m.X.Tsolve((1., 1e-15), 'T:2', sp.T)[0]).T
 
-    print ("INCOMPLETE!"); return
-
-    Z = m.dot(Z); p.append(sp); ind.append(np.array(m.inds)); c.append(m.p_crossing)
+        Z = m.dot(Z); p.append(sp); ind.append(np.array(m.inds)); c.append(m.p_crossing)
 
     (i, j, x, y, r) = np.concatenate([np.array(ijxyp(np.repeat(m, nn(m)), np.arange(nn(m)))) for m in range(nm)], 1)
     [[i1, s1], [i2, s2]] = [map(np.array, [m.inds, m.shifts]) for m in [m1, m2]]
@@ -228,9 +226,11 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     ind[w1] = i1[x1] + (y1-s1[x1])//2
     ind[w2] = i2[x2] + (y2-s2[x2])//2
 
-    print (np.array([i, j, x, y, ind, r]).T)
-    print (U.shape); print (VdV.shape); print (WWd.shape)
-    print (np.round(np.abs(Z), 2))
+    if not (type(m1.X) == type(m2.X) == MZICrossing):
+        from warnings import warn; warn("Some bug here, certain functions may not work for 3-MZI or MZI+X...")
+        # print (np.array([i, j, x, y, ind, r]).T)
+        # print (U.shape); print (VdV.shape); print (WWd.shape)
+        # print (np.round(np.abs(Z), 2))
 
     ijzp = np.array([i, j, ind, r]).T;
     (init_p, init_m) = INIT[type(m1.X)]
@@ -241,7 +241,7 @@ def diag(m1: Union[StructuredMeshNetwork, None], m2: Union[StructuredMeshNetwork
     if (init.ndim == 1): init = np.outer(init, init_p) + np.outer(1-init, init_m)
 
     diagHelper = get_diagHelper(type(m1.X), type(m2.X))
-    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, init, improved, sigp)
+    diagHelper(U, Z, VdV, WWd, *p, *c, ijzp, init, improved, sigp)  # (U, Z, VdV, WWd, p1, p2, c1, c2, ijzp, init, improved, sigp)
     phi_diag[:] = np.angle(np.diag(U)) - np.angle(np.sum(VdV * WWd.T, axis=1))
 
 # Super-fast Numba JIT-accelerated self-configuration code that implements the matrix diagonalization method.
